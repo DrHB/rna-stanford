@@ -9,6 +9,11 @@ from torch import nn, einsum
 from einops import rearrange, repeat
 from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
+import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
+import math
+from timm.models.layers import drop_path, to_2tuple, trunc_normal_
+
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
     return val is not None
@@ -131,6 +136,7 @@ class GraphTransformer(nn.Module):
         self,
         dim,
         depth,
+        seq_embed_dim=4,
         out_dim = 2,
         dim_head = 64,
         edge_dim = None,
@@ -144,6 +150,7 @@ class GraphTransformer(nn.Module):
         super().__init__()
         self.layers = List([])
         edge_dim = default(edge_dim, dim)
+        self.seq_embed_dim = nn.Embedding(seq_embed_dim, dim)
         self.norm_edges = nn.LayerNorm(edge_dim) if norm_edges else nn.Identity()
 
         self.adj_emb = nn.Embedding(2, edge_dim) if accept_adjacency_matrix else None
@@ -166,11 +173,19 @@ class GraphTransformer(nn.Module):
 
     def forward(
         self,
-        nodes,
-        edges = None,
-        adj_mat = None,
-        mask = None
-    ):
+        x,
+    ):  
+        
+        edges = None
+        mask = x['mask']
+        Lmax = mask.sum(-1).max()
+        
+        mask = mask[:,:Lmax]
+        nodes = x['seq'][:, :Lmax]
+        adj_mat = x['adj_matrix'][:, :Lmax, :Lmax]
+        
+        
+        nodes = self.seq_embed_dim(nodes.long())
         batch, seq, _ = nodes.shape
 
         if exists(edges):
@@ -192,3 +207,8 @@ class GraphTransformer(nn.Module):
                 nodes = ff_residual(ff(nodes), nodes)
         out = self.to_out(nodes)
         return out
+    
+    
+
+
+

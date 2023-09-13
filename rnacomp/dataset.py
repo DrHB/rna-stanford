@@ -2,14 +2,14 @@
 
 # %% auto 0
 __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceDataLoader', 'encode_rna_sequence',
-           'generate_adj_matrix', 'generate_edge_data', 'RNA_DatasetV0', 'RNA_DatasetV0G']
+           'generate_adj_matrix', 'generate_edge_data', 'RNA_DatasetV0', 'RNA_DatasetV1', 'RNA_DatasetV0G']
 
 # %% ../nbs/00_dataset.ipynb 2
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.data import Data, DataLoader, Batch
 import torch
 import seaborn as sbn
 import torch.nn.functional as F
@@ -127,7 +127,7 @@ def generate_adj_matrix(file_path, max_len, prob=0.5):
         matrix[pos1 - 1, pos2 - 1] = prob
         matrix[pos2 - 1, pos1 - 1] = prob
 
-    return torch.tensor(matrix, dtype=torch.int)
+    return (torch.tensor(matrix) > prob).int()
 
 def generate_edge_data(file_path):
     # Read the file into a DataFrame
@@ -144,7 +144,7 @@ def generate_edge_data(file_path):
 
 
 class RNA_DatasetV0(Dataset):
-    def __init__(self, df, mask_only=False,prob_for_adj = 0.5, **kwargs):
+    def __init__(self, df, mask_only=False,prob_for_adj = 0.5 ,**kwargs):
 
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
         self.Lmax = 206
@@ -191,6 +191,59 @@ class RNA_DatasetV0(Dataset):
         react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],
                                                self.react_err_DMS[idx]],-1))
         return {"seq": torch.from_numpy(seq), "mask": mask, "adj_matrix": adj_matrix}, {
+            "react": react,
+            "react_err": react_err,
+            "mask": mask,
+        }
+        
+        
+class RNA_DatasetV1(Dataset):
+    #same as v0 but not adj matrix
+    def __init__(self, df, mask_only=False,**kwargs):
+
+        self.seq_map = {'A':0,'C':1,'G':2,'U':3}
+        self.Lmax = 206
+        df['L'] = df.sequence.apply(len)
+        df_2A3 = df.loc[df.experiment_type=='2A3_MaP'].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type=='DMS_MaP'].reset_index(drop=True)
+
+
+        self.seq = df_2A3['sequence'].values
+        self.L = df_2A3['L'].values
+        
+        self.react_2A3 = df_2A3[[c for c in df_2A3.columns if \
+                                 'reactivity_0' in c]].values
+        self.react_DMS = df_DMS[[c for c in df_DMS.columns if \
+                                 'reactivity_0' in c]].values
+        self.react_err_2A3 = df_2A3[[c for c in df_2A3.columns if \
+                                 'reactivity_error_0' in c]].values
+        self.react_err_DMS = df_DMS[[c for c in df_DMS.columns if \
+                                'reactivity_error_0' in c]].values
+        self.sn_2A3 = df_2A3['signal_to_noise'].values
+        self.sn_DMS = df_DMS['signal_to_noise'].values
+        self.bpp = df_2A3['bpp'].values
+        self.mask_only = mask_only
+        
+    def __len__(self):
+        return len(self.seq)  
+    
+    def __getitem__(self, idx):
+        seq = self.seq[idx]
+        if self.mask_only:
+            mask = torch.zeros(self.Lmax, dtype=torch.bool)
+            mask[:len(seq)] = True
+            return {'mask':mask},{'mask':mask}
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[:len(seq)] = True
+        seq = np.pad(seq,(0,self.Lmax-len(seq)))
+        
+        react = torch.from_numpy(np.stack([self.react_2A3[idx],
+                                           self.react_DMS[idx]],-1))
+        react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],
+                                               self.react_err_DMS[idx]],-1))
+        return {"seq": torch.from_numpy(seq), "mask": mask}, {
             "react": react,
             "react_err": react_err,
             "mask": mask,
