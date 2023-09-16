@@ -2,8 +2,9 @@
 
 # %% auto 0
 __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 'Attention', 'FeedForward', 'GraphTransformer',
-           'DropPath', 'Mlp', 'Block', 'SinusoidalPosEmb', 'RnaModelV0', 'full_attention_conv', 'gcn_conv',
-           'DIFFormerConv', 'DIFFormer', 'to_graph_batch', 'DifformerCustomV0']
+           'full_attention_conv', 'gcn_conv', 'DIFFormerConv', 'DIFFormer', 'to_graph_batch', 'DifformerCustomV0',
+           'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half', 'apply_rotary_pos_emb', 'Conv1D', 'ResBlock',
+           'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -19,6 +20,7 @@ from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import to_dense_batch
+from x_transformers import ContinuousTransformerWrapper, Encoder
 
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
@@ -215,167 +217,6 @@ class GraphTransformer(nn.Module):
         return out
     
     
-
-
-class DropPath(nn.Module):
-    def __init__(self, drop_prob=None):
-        super(DropPath, self).__init__()
-        self.drop_prob = drop_prob
-
-    def forward(self, x):
-        return drop_path(x, self.drop_prob, self.training)
-    
-    def extra_repr(self) -> str:
-        return 'p={}'.format(self.drop_prob)
-    
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        # x = self.drop(x)
-        # commit this for the orignal BERT implement 
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
-
-#BEiTv2 block
-class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 window_size=None, attn_head_dim=None, **kwargs):
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=drop, batch_first=True)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-
-        if init_values is not None:
-            self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
-            self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
-        else:
-            self.gamma_1, self.gamma_2 = None, None
-
-    def forward(self, x, attn_mask=None, key_padding_mask=None):
-        if self.gamma_1 is None:
-            xn = self.norm1(x)
-            x = x + self.drop_path(self.attn(xn,xn,xn,
-                            attn_mask=attn_mask,
-                            key_padding_mask=key_padding_mask,
-                            need_weights=False)[0])
-            x = x + self.drop_path(self.mlp(self.norm2(x)))
-        else:
-            xn = self.norm1(x)
-            x = x + self.drop_path(self.gamma_1 * self.attn(xn,xn,xn,
-                            attn_mask=attn_mask,
-                            key_padding_mask=key_padding_mask,
-                            need_weights=False)[0])
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
-        return x
-
-
-class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim=16, M=10000):
-        super().__init__()
-        self.dim = dim
-        self.M = M
-
-    def forward(self, x):
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(self.M) / half_dim
-        emb = torch.exp(torch.arange(half_dim, device=device) * (-emb))
-        emb = x[...,None] * emb[None,...]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
-
-
-class RnaModelV0(nn.Module):
-    def __init__(self, dim=192, depth=12, use_checkpoint=False, **kwargs):
-        super().__init__()
-        self.emb = nn.Embedding(4,dim)
-        self.blocks = nn.ModuleList([ 
-            Block(
-                dim=dim, num_heads=dim//32, mlp_ratio=4, drop_path=0.0*(i/(depth-1)), init_values=1,)
-            for i in range(depth)])
-        self.pos_enc = SinusoidalPosEmb(dim)
-        self.proj_out = nn.Linear(dim,2)
-        self.use_checkpoint = use_checkpoint
-        self.apply(self._init_weights)
-
-
-    def fix_init_weight(self):
-        def rescale(param, layer_id):
-            param.div_(math.sqrt(2.0 * layer_id))
-
-        for layer_id, layer in enumerate(self.blocks):
-            rescale(layer.attn.proj.weight.data, layer_id + 1)
-            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-    def init_weights(self, pretrained=None):
-        def _init_weights(m):
-            if isinstance(m, nn.Linear):
-                trunc_normal_(m.weight, std=.02)
-                if isinstance(m, nn.Linear) and m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-        self.apply(_init_weights)
-        
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'cls_token'}
-    
-    def forward(self, x0):
-        mask = x0['mask']
-        B,_ = mask.shape
-        Lmax = mask.sum(-1).max()
-        mask = torch.cat([torch.ones(B,1,dtype=mask.dtype, device=mask.device),mask],1)
-        attn_mask = torch.zeros(mask.shape, device=mask.device)
-        attn_mask[~mask] = -torch.inf
-        x = x0['seq'][:,:Lmax]
-        mask,attn_mask = mask[:,:Lmax], attn_mask[:,:Lmax]
-        
-        pos = torch.arange(Lmax, device=x.device).unsqueeze(0)
-        pos = self.pos_enc(pos)
-        x = self.emb(x)
-        x = x + pos
-        
-        #print(Lmax)
-        
-        for blk in self.blocks:
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x, None, attn_mask)
-            else: x = blk(x, None, attn_mask)
-                
-        x = self.proj_out(x) #cls token
-        return x
-        
-    def get_layer_groups(self):
-        def flatten_model(m):
-            return [m] if not hasattr(m,'children') or len(list(m.children())) == 0 else \
-                sum(map(flatten_model, list(m.children())), [])
-        return [flatten_model(self)]
 
 
 
@@ -610,3 +451,289 @@ class DifformerCustomV0(nn.Module):
         
         
         
+
+# %% ../nbs/01_models.ipynb 3
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return "p={}".format(self.drop_prob)
+
+
+class Mlp(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        hidden_features=None,
+        out_features=None,
+        act_layer=nn.GELU,
+        drop=0.0,
+    ):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim, scale_base=512, use_xpos=True):
+        super().__init__()
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+        self.use_xpos = use_xpos
+        self.scale_base = scale_base
+        scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
+        self.register_buffer("scale", scale)
+
+    def forward(self, seq_len, device="cuda"):
+        t = torch.arange(seq_len, device=device).type_as(self.inv_freq)
+        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
+        freqs = torch.cat((freqs, freqs), dim=-1)
+
+        if not self.use_xpos:
+            return freqs, torch.ones(1, device=device)
+
+        power = (t - (seq_len // 2)) / self.scale_base
+        scale = self.scale ** rearrange(power, "n -> n 1")
+        scale = torch.cat((scale, scale), dim=-1)
+
+        return freqs, scale
+
+
+def rotate_half(x):
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(pos, t, scale=1.0):
+    return (t * pos.cos() * scale) + (rotate_half(t) * pos.sin() * scale)
+
+
+class Conv1D(nn.Conv1d):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.src_key_padding_mask = None
+
+    def forward(self, x, src_key_padding_mask=None):
+        if src_key_padding_mask is not None:
+            self.src_key_padding_mask = src_key_padding_mask
+        if self.src_key_padding_mask is not None:
+            x = torch.where(
+                self.src_key_padding_mask.unsqueeze(-1)
+                .expand(-1, -1, x.shape[-1])
+                .bool(),
+                torch.zeros_like(x),
+                x,
+            )
+        return super().forward(x.permute(0, 2, 1)).permute(0, 2, 1)
+
+
+class ResBlock(nn.Sequential):
+    def __init__(self, d_model):
+        super().__init__(
+            nn.LayerNorm(d_model), nn.GELU(), Conv1D(d_model, d_model, 3, padding=1)
+        )
+        self.src_key_padding_mask = None
+
+    def forward(self, x, src_key_padding_mask=None):
+        self[-1].src_key_padding_mask = (
+            src_key_padding_mask
+            if src_key_padding_mask is not None
+            else self.src_key_padding_mask
+        )
+        return x + super().forward(x)
+
+
+class Extractor(nn.Sequential):
+    def __init__(self, d_model, in_ch=4):
+        super().__init__(
+            nn.Embedding(in_ch, d_model // 4),
+            Conv1D(d_model // 4, d_model, 7, padding=3),
+            ResBlock(d_model),
+        )
+
+    def forward(self, x, src_key_padding_mask=None):
+        for i in [1, 2]:
+            self[i].src_key_padding_mask = src_key_padding_mask
+        return super().forward(x)
+
+
+# BEiTv2 block
+class Block(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        drop=0.0,
+        attn_drop=0.0,
+        drop_path=0.0,
+        init_values=None,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        window_size=None,
+        attn_head_dim=None,
+        **kwargs
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = nn.MultiheadAttention(
+            dim, num_heads, dropout=drop, batch_first=True
+        )
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=mlp_hidden_dim,
+            act_layer=act_layer,
+            drop=drop,
+        )
+
+        if init_values is not None:
+            self.gamma_1 = nn.Parameter(
+                init_values * torch.ones((dim)), requires_grad=True
+            )
+            self.gamma_2 = nn.Parameter(
+                init_values * torch.ones((dim)), requires_grad=True
+            )
+        else:
+            self.gamma_1, self.gamma_2 = None, None
+
+        self.emb = RotaryEmbedding(dim)
+
+    def forward(self, x, attn_mask=None, key_padding_mask=None):
+        q = k = v = self.norm1(x)
+        positions, scale = self.emb(x.shape[1], x.device)
+        q = apply_rotary_pos_emb(positions, q, scale)
+        k = apply_rotary_pos_emb(positions, k, scale**-1)
+
+        if self.gamma_1 is None:
+            x = x + self.drop_path(
+                self.attn(
+                    q,
+                    k,
+                    v,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=False,
+                )[0]
+            )
+            x = x + self.drop_path(self.mlp(self.norm2(x)))
+        else:
+            x = x + self.drop_path(
+                self.gamma_1
+                * self.attn(
+                    q,
+                    k,
+                    v,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=False,
+                )[0]
+            )
+            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
+        return x
+
+
+class Block_conv(Block):
+    def __init__(self, dim, mlp_ratio, *args, **kwargs):
+        super().__init__(dim, *args, **kwargs)
+        self.mlp.fc1 = Conv1D(dim, dim, 3, padding=1)
+        self.mlp.fc2 = Conv1D(dim, dim, 3, padding=1)
+
+    def forward(self, *args, key_padding_mask=None, **kwargs):
+        self.mlp.fc1.src_key_padding_mask = key_padding_mask
+        self.mlp.fc2.src_key_padding_mask = key_padding_mask
+        return super().forward(*args, **kwargs)
+
+
+class RNA_ModelV2(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
+        super().__init__()
+        # self.emb = nn.Sequential(nn.Embedding(4,dim//4), Conv1D(dim//4,dim,7,padding=3),
+        #                        nn.LayerNorm(dim), nn.GELU(), Conv1D(dim,dim,3,padding=1))
+        self.extractor = Extractor(dim)
+        # self.pos_enc = SinusoidalPosEmb(dim)
+
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        # self.transformer = nn.TransformerEncoder(
+        #    TransformerEncoderLayer_conv(d_model=dim, nhead=dim//head_size, dim_feedforward=4*dim,
+        #        dropout=0.1, activation=nn.GELU(), batch_first=True, norm_first=True), depth)
+        self.proj_out = nn.Linear(dim, 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        for blk in self.blocks:
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+
+
+
+
+
+class CustomTransformerV0(nn.Module):
+    def __init__(self,dim=192, depth=12,  attb_heads=8, out =2):
+        super().__init__()
+        self.emb = nn.Embedding(4,dim)
+        self.dec = ContinuousTransformerWrapper(
+            dim_in = dim,
+            dim_out = out,
+            max_seq_len = 512,
+            attn_layers = Encoder(
+                dim = dim,
+                depth = depth,
+                heads = attb_heads,
+                attn_flash = True, 
+                rotary_pos_emb = True
+            )
+         )
+        
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.emb(x)
+        out = self.dec(x, mask = mask)
+        return out
