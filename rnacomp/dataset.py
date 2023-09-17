@@ -204,11 +204,8 @@ class RNA_DatasetBaselineSplit(Dataset):
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
         self.Lmax = 206
         df['L'] = df.sequence.apply(len)
-        df_2A3 = df.loc[df.experiment_type=='2A3_MaP']
-        df_DMS = df.loc[df.experiment_type=='DMS_MaP']
-        split = df_2A3.index.values
-        df_2A3 = df_2A3.iloc[split].reset_index(drop=True)
-        df_DMS = df_DMS.iloc[split].reset_index(drop=True)
+        df_2A3 = df.loc[df.experiment_type=='2A3_MaP'].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type=='DMS_MaP'].reset_index(drop=True)
         
         if mode != 'train' or sn_train:
             m = (df_2A3['SN_filter'].values > 0) & (df_DMS['SN_filter'].values > 0)
