@@ -4,7 +4,7 @@
 __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 'Attention', 'FeedForward', 'GraphTransformer',
            'full_attention_conv', 'gcn_conv', 'DIFFormerConv', 'DIFFormer', 'to_graph_batch', 'DifformerCustomV0',
            'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half', 'apply_rotary_pos_emb', 'Conv1D', 'ResBlock',
-           'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0']
+           'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0', 'CustomTransformerV1']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -20,7 +20,7 @@ from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import to_dense_batch
-from x_transformers import ContinuousTransformerWrapper, Encoder
+from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
@@ -705,29 +705,25 @@ class RNA_ModelV2(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-
-
-
 
 
 class CustomTransformerV0(nn.Module):
-    def __init__(self,dim=192, depth=12,  attb_heads=8, out =2):
+    def __init__(self, dim=192, depth=12, attb_heads=8, out=2):
         super().__init__()
-        self.emb = nn.Embedding(4,dim)
+        self.emb = nn.Embedding(4, dim)
         self.dec = ContinuousTransformerWrapper(
-            dim_in = dim,
-            dim_out = out,
-            max_seq_len = 512,
-            attn_layers = Encoder(
-                dim = dim,
-                depth = depth,
-                heads = attb_heads,
-                attn_flash = True, 
-                rotary_pos_emb = True
-            )
-         )
-        
+            dim_in=dim,
+            dim_out=out,
+            max_seq_len=512,
+            attn_layers=Encoder(
+                dim=dim,
+                depth=depth,
+                heads=attb_heads,
+                attn_flash=True,
+                rotary_pos_emb=True,
+            ),
+        )
+
     def forward(self, x0):
         mask = x0["mask"]
         L0 = mask.shape[1]
@@ -735,5 +731,31 @@ class CustomTransformerV0(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
         x = self.emb(x)
-        out = self.dec(x, mask = mask)
+        out = self.dec(x, mask=mask)
+        return out
+
+
+class CustomTransformerV1(nn.Module):
+    def __init__(self, dim=192, depth=12, attb_heads=8, head_size=32):
+        super().__init__()
+        self.dec = TransformerWrapper(
+            num_tokens=4,
+            logits_dim=2,
+            max_seq_len=512,
+            attn_layers=Encoder(
+                dim=dim,
+                depth=depth,
+                heads=attb_heads,
+                attn_flash=True,
+                rotary_pos_emb=True,
+            ),
+        )
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        out = self.dec(x, mask=mask)
         return out
