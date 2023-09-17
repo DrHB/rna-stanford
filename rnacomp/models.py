@@ -736,7 +736,7 @@ class CustomTransformerV0(nn.Module):
 
 
 class CustomTransformerV1(nn.Module):
-    def __init__(self, dim=192, depth=12, attb_heads=8, head_size=32):
+    def __init__(self, dim=192, depth=12, attn_heads=8, head_size=32):
         super().__init__()
         self.dec = TransformerWrapper(
             num_tokens=4,
@@ -745,7 +745,7 @@ class CustomTransformerV1(nn.Module):
             attn_layers=Encoder(
                 dim=dim,
                 depth=depth,
-                heads=attb_heads,
+                heads=attn_heads,
                 attn_flash=True,
                 rotary_pos_emb=True,
             ),
