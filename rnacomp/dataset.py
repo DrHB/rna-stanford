@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceDataLoader', 'encode_rna_sequence',
            'generate_adj_matrix', 'generate_edge_data', 'RNA_DatasetBaseline', 'RNA_DatasetBaselineSplit',
-           'RNA_DatasetV0', 'RNA_DatasetV1', 'RNA_DatasetV0G']
+           'RNA_DatasetV0', 'RNA_DatasetV1', 'RNA_DatasetV0G', 'RNA_Dataset_Test']
 
 # %% ../nbs/00_dataset.ipynb 2
 import pandas as pd
@@ -17,11 +17,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from sklearn.model_selection import KFold
 
-# %% ../nbs/00_dataset.ipynb 3
+# %% ../nbs/00_dataset.ipynb 4
 def good_luck():
     return True
 
-# %% ../nbs/00_dataset.ipynb 4
+# %% ../nbs/00_dataset.ipynb 5
 class LenMatchBatchSampler(torch.utils.data.BatchSampler):
     def __iter__(self):
         buckets = [[]] * 100
@@ -73,7 +73,7 @@ class DeviceDataLoader:
         for batch in self.dataloader:
             yield tuple(dict_to(x, self.device) for x in batch)
 
-# %% ../nbs/00_dataset.ipynb 5
+# %% ../nbs/00_dataset.ipynb 6
 def encode_rna_sequence(seq):
     L = len(seq)
 
@@ -493,4 +493,33 @@ class LenMatchBatchSampler(torch.utils.data.BatchSampler):
             yielded += 1
             yield batch
             
+
+
+# %% ../nbs/00_dataset.ipynb 9
+class RNA_Dataset_Test(Dataset):
+    def __init__(self, df, mask_only=False, **kwargs):
+        self.seq_map = {'A':0,'C':1,'G':2,'U':3}
+        df['L'] = df.sequence.apply(len)
+        self.Lmax = df['L'].max()
+        self.df = df
+        self.mask_only = mask_only
+        
+    def __len__(self):
+        return len(self.df)  
+    
+    def __getitem__(self, idx):
+        id_min, id_max, seq = self.df.loc[idx, ['id_min','id_max','sequence']]
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        L = len(seq)
+        mask[:L] = True
+        if self.mask_only: return {'mask':mask},{}
+        ids = np.arange(id_min,id_max+1)
+        
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        seq = np.pad(seq,(0,self.Lmax-L))
+        ids = np.pad(ids,(0,self.Lmax-L), constant_values=-1)
+        
+        return {'seq':torch.from_numpy(seq), 'mask':mask}, \
+               {'ids':ids}
 
