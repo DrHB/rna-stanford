@@ -4,7 +4,8 @@
 __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 'Attention', 'FeedForward', 'GraphTransformer',
            'full_attention_conv', 'gcn_conv', 'DIFFormerConv', 'DIFFormer', 'to_graph_batch', 'DifformerCustomV0',
            'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half', 'apply_rotary_pos_emb', 'Conv1D', 'ResBlock',
-           'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0', 'CustomTransformerV1']
+           'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0', 'CustomTransformerV1', 'GAT',
+           'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -19,8 +20,10 @@ from timm.models.layers import drop_path, to_2tuple, trunc_normal_
 from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
 from torch_geometric.data import Data, Batch
+import numpy as np
 from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
+from torch_geometric.nn import GATConv, GCNConv
 
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
@@ -705,6 +708,8 @@ class RNA_ModelV2(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+    
+
 
 
 class CustomTransformerV0(nn.Module):
@@ -759,3 +764,124 @@ class CustomTransformerV1(nn.Module):
         x = x0["seq"][:, :Lmax]
         out = self.dec(x, mask=mask)
         return out
+    
+class GAT(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=2,
+                 dropout=0.5, use_bn=False, heads=2, out_heads=1):
+        super(GAT, self).__init__()
+
+        self.convs = nn.ModuleList()
+        self.convs.append(
+            GATConv(in_channels, hidden_channels, dropout=dropout, heads=heads, concat=True))
+
+        self.bns = nn.ModuleList()
+        self.bns.append(nn.LayerNorm(hidden_channels*heads))
+        for _ in range(num_layers - 2):
+            self.convs.append(
+                    GATConv(hidden_channels*heads, hidden_channels, dropout=dropout, heads=heads, concat=True))
+            self.bns.append(nn.LayerNorm(hidden_channels*heads))
+
+        self.convs.append(
+            GATConv(hidden_channels*heads, out_channels, dropout=dropout, heads=out_heads, concat=False))
+
+        self.dropout = dropout
+        self.activation = F.elu 
+        self.use_bn = use_bn
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for bn in self.bns:
+            bn.reset_parameters()
+
+    def forward(self, x, edge_index):
+        res = x
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index)
+            if self.use_bn:
+                x = self.bns[i](x)
+            x = self.activation(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](x, edge_index)
+        x = res + x
+        return x
+    
+    
+def to_graph_batchv1(seq, mask, adj_matrix):
+    res = []
+    for i in range(len(seq)):
+        res.append(Data(x=seq[i][mask[i]], edge_index=adj_matrix[i].nonzero().T))
+    return Batch.from_data_list(res) 
+
+
+class PytorchBatchWrapper(nn.Module):
+    def __init__(self, md):
+        super().__init__()
+        self.md = md
+        
+    def forward(self, seq, mask, adj_matrix):
+        batch = to_graph_batchv1(seq, mask, adj_matrix)
+        out = self.md(batch.x, batch.edge_index)
+        out, _ = to_dense_batch(out, batch.batch)
+        return out
+        
+        
+        
+class RNA_ModelV3(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, graph_layers_every=4, **kwargs):
+        super().__init__()
+        
+        self.extractor = Extractor(dim)
+        
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+        
+        self.graph_layers_every = graph_layers_every
+        self.graph_layers = nn.ModuleList(
+            [
+                PytorchBatchWrapper(GAT(in_channels=dim,
+                                        hidden_channels=dim//2, 
+                                        out_channels=dim,
+                                        num_layers=2, 
+                                        dropout=0.1,
+                                        use_bn=True,
+                                        heads=4, 
+                                        out_heads=1))
+                for i in range(depth) if i % self.graph_layers_every == 0
+            ]
+        )
+        
+        self.proj_out = nn.Linear(dim, 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        
+        graph_layer_index = 0
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+            if i % self.graph_layers_every == 0:
+                x = self.graph_layers[graph_layer_index](x, mask, x0["adj_matrix"])
+                graph_layer_index += 1
+        
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+
+
