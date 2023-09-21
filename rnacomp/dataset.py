@@ -470,6 +470,7 @@ class LenMatchBatchSampler(torch.utils.data.BatchSampler):
             yield batch
             
 
+            
 def generate_base_pair_matrix(file_path, L):
     """
     Reads a TXT file of base pair probabilities and generates an n x n matrix.
@@ -483,12 +484,24 @@ def generate_base_pair_matrix(file_path, L):
     # Read the data using pandas
     data = pd.read_csv(file_path, sep=" ", header=None, names=["pos1", "pos2", "prob"])
     
+    # Find the largest position in the 'pos1' column
+    largest_position = data['pos1'].max()
+    
     ids = torch.from_numpy(data[['pos1','pos2']].values)
     matrix = torch.zeros((L, L))
     matrix[ids[:,0]-1,ids[:,1]-1] = torch.from_numpy(data['prob'].values).float()
     matrix[ids[:,1]-1,ids[:,0]-1] = torch.from_numpy(data['prob'].values).float()
+    
+
+    matrix[:26, :] = 0
+    matrix[:, :26] = 0
+    
+    # Adjust the end based on the largest_position and set the last 21 positions to 0
+    adjusted_end = largest_position - 21
+    matrix[adjusted_end:, :] = 0
+    matrix[:, adjusted_end:] = 0
+    
     return matrix
-            
                
 class RNA_DatasetBaselineSplitbppV0(Dataset):
     def __init__(self, df, mode='train', seed=2023, fold=0, nfolds=4, mask_only=False, 
@@ -540,7 +553,7 @@ class RNA_DatasetBaselineSplitbppV0(Dataset):
                 'sn':sn, 'mask':mask}
 
 
-# %% ../nbs/00_dataset.ipynb 9
+# %% ../nbs/00_dataset.ipynb 10
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
