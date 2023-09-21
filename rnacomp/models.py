@@ -5,7 +5,8 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'full_attention_conv', 'gcn_conv', 'DIFFormerConv', 'DIFFormer', 'to_graph_batch', 'DifformerCustomV0',
            'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half', 'apply_rotary_pos_emb', 'Conv1D', 'ResBlock',
            'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2', 'CustomTransformerV0', 'CustomTransformerV1', 'GAT',
-           'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3']
+           'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3', 'GCN', 'LayerNorm', 'GEGLU', 'FeedForwardV0',
+           'RNA_ModelV4']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -708,8 +709,6 @@ class RNA_ModelV2(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-
 
 
 class CustomTransformerV0(nn.Module):
@@ -764,28 +763,55 @@ class CustomTransformerV1(nn.Module):
         x = x0["seq"][:, :Lmax]
         out = self.dec(x, mask=mask)
         return out
-    
+
+
 class GAT(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=2,
-                 dropout=0.5, use_bn=False, heads=2, out_heads=1):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        use_bn=False,
+        heads=2,
+        out_heads=1,
+    ):
         super(GAT, self).__init__()
 
         self.convs = nn.ModuleList()
         self.convs.append(
-            GATConv(in_channels, hidden_channels, dropout=dropout, heads=heads, concat=True))
+            GATConv(
+                in_channels, hidden_channels, dropout=dropout, heads=heads, concat=True
+            )
+        )
 
         self.bns = nn.ModuleList()
-        self.bns.append(nn.LayerNorm(hidden_channels*heads))
+        self.bns.append(nn.LayerNorm(hidden_channels * heads))
         for _ in range(num_layers - 2):
             self.convs.append(
-                    GATConv(hidden_channels*heads, hidden_channels, dropout=dropout, heads=heads, concat=True))
-            self.bns.append(nn.LayerNorm(hidden_channels*heads))
+                GATConv(
+                    hidden_channels * heads,
+                    hidden_channels,
+                    dropout=dropout,
+                    heads=heads,
+                    concat=True,
+                )
+            )
+            self.bns.append(nn.LayerNorm(hidden_channels * heads))
 
         self.convs.append(
-            GATConv(hidden_channels*heads, out_channels, dropout=dropout, heads=out_heads, concat=False))
+            GATConv(
+                hidden_channels * heads,
+                out_channels,
+                dropout=dropout,
+                heads=out_heads,
+                concat=False,
+            )
+        )
 
         self.dropout = dropout
-        self.activation = F.elu 
+        self.activation = F.elu
         self.use_bn = use_bn
 
     def reset_parameters(self):
@@ -806,34 +832,33 @@ class GAT(nn.Module):
         x = self.convs[-1](x, edge_index)
         x = res + x
         return x
-    
-    
+
+
 def to_graph_batchv1(seq, mask, adj_matrix):
     res = []
     for i in range(len(seq)):
         res.append(Data(x=seq[i][mask[i]], edge_index=adj_matrix[i].nonzero().T))
-    return Batch.from_data_list(res) 
+    return Batch.from_data_list(res)
 
 
 class PytorchBatchWrapper(nn.Module):
     def __init__(self, md):
         super().__init__()
         self.md = md
-        
+
     def forward(self, seq, mask, adj_matrix):
         batch = to_graph_batchv1(seq, mask, adj_matrix)
         out = self.md(batch.x, batch.edge_index)
         out, _ = to_dense_batch(out, batch.batch)
         return out
-        
-        
-        
+
+
 class RNA_ModelV3(nn.Module):
     def __init__(self, dim=192, depth=12, head_size=32, graph_layers_every=4, **kwargs):
         super().__init__()
-        
+
         self.extractor = Extractor(dim)
-        
+
         self.blocks = nn.ModuleList(
             [
                 Block_conv(
@@ -847,22 +872,27 @@ class RNA_ModelV3(nn.Module):
                 for i in range(depth)
             ]
         )
-        
+
         self.graph_layers_every = graph_layers_every
         self.graph_layers = nn.ModuleList(
             [
-                PytorchBatchWrapper(GAT(in_channels=dim,
-                                        hidden_channels=dim//2, 
-                                        out_channels=dim,
-                                        num_layers=2, 
-                                        dropout=0.1,
-                                        use_bn=True,
-                                        heads=4, 
-                                        out_heads=1))
-                for i in range(depth) if i % self.graph_layers_every == 0
+                PytorchBatchWrapper(
+                    GAT(
+                        in_channels=dim,
+                        hidden_channels=dim // 2,
+                        out_channels=dim,
+                        num_layers=2,
+                        dropout=0.1,
+                        use_bn=True,
+                        heads=4,
+                        out_heads=1,
+                    )
+                )
+                for i in range(depth)
+                if i % self.graph_layers_every == 0
             ]
         )
-        
+
         self.proj_out = nn.Linear(dim, 2)
 
     def forward(self, x0):
@@ -872,16 +902,154 @@ class RNA_ModelV3(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
         x = self.extractor(x, src_key_padding_mask=~mask)
-        
+
         graph_layer_index = 0
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
             if i % self.graph_layers_every == 0:
                 x = self.graph_layers[graph_layer_index](x, mask, x0["adj_matrix"])
                 graph_layer_index += 1
-        
+
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
 
 
+class GCN(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        save_mem=True,
+        use_bn=True,
+    ):
+        super(GCN, self).__init__()
+
+        self.convs = nn.ModuleList()
+        # self.convs.append(
+        #     GCNConv(in_channels, hidden_channels, cached=not save_mem, normalize=not save_mem))
+        self.convs.append(GCNConv(in_channels, hidden_channels, cached=not save_mem))
+
+        self.bns = nn.ModuleList()
+        self.bns.append(nn.LayerNorm(hidden_channels))
+        for _ in range(num_layers - 2):
+            self.convs.append(
+                GCNConv(hidden_channels, hidden_channels, cached=not save_mem)
+            )
+            self.bns.append(nn.LayerNorm(hidden_channels))
+
+        # self.convs.append(
+        #     GCNConv(hidden_channels, out_channels, cached=not save_mem, normalize=not save_mem))
+        self.convs.append(GCNConv(hidden_channels, out_channels, cached=not save_mem))
+
+        self.dropout = dropout
+        self.activation = F.gelu
+        self.use_bn = use_bn
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for bn in self.bns:
+            bn.reset_parameters()
+
+    def forward(self, x, edge_index):
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index)
+            if self.use_bn:
+                x = self.bns[i](x)
+            x = self.activation(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](x, edge_index)
+        return x
+
+
+class LayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        eps = 1e-5 if x.dtype == torch.float32 else 1e-3
+        var = torch.var(x, dim = -1, unbiased = False, keepdim = True)
+        mean = torch.mean(x, dim = -1, keepdim = True)
+        return (x - mean) * (var + eps).rsqrt() * self.g
+    
+class GEGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim = -1)
+        return x * F.gelu(gate)
+
+
+class FeedForwardV0(nn.Module):
+    def __init__(self, dim,  out =2, mult = 4, dropout = 0.1):
+        super().__init__()
+        inner_dim = int(dim * mult)
+
+        self.net = nn.Sequential(
+            nn.Linear(dim, inner_dim * 2, bias = False),
+            GEGLU(),
+            LayerNorm(inner_dim),
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, out, bias = False)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class RNA_ModelV4(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, graph_layers_every=3, **kwargs):
+        super().__init__()
+
+        self.extractor = Extractor(dim)
+
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.graph_layers_every = graph_layers_every
+        self.graph_layers = PytorchBatchWrapper(
+            GCN(
+                dim * (depth // graph_layers_every),
+                dim,
+                dim,
+                num_layers=depth // graph_layers_every,
+                dropout=0.2,
+                use_bn=True,
+            )
+        )
+
+        self.proj_out =FeedForwardV0(dim * 2, 2)
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        intermediates = []
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+            if i % self.graph_layers_every == 0:
+                intermediates.append(x)
+        graph = self.graph_layers(
+            torch.concat(intermediates, dim=-1), mask, x0["adj_matrix"]
+        )
+
+        x = torch.concat([x, graph], dim=-1)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
