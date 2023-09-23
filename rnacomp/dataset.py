@@ -556,7 +556,7 @@ class RNA_DatasetBaselineSplitbppV0(Dataset):
                
 def dot_to_adjacency(dot_notation, n):
     adjacency_matrix = np.zeros((n, n), dtype=int)
-    
+    dot_notation = (26 * '.') + dot_notation + (21 * '.')
     stack = []
     for i, char in enumerate(dot_notation):
         if char == '(':
@@ -574,7 +574,7 @@ class RNA_DatasetBaselineSplitssV0(Dataset):
         short sequence without adapters 
         """
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
-        self.Lmax = 206 - 26 - 21
+        self.Lmax = 206
         df['L'] = df.sequence.apply(len)
         df_2A3 = df.loc[df.experiment_type=='2A3_MaP'].reset_index(drop=True)
         df_DMS = df.loc[df.experiment_type=='DMS_MaP'].reset_index(drop=True)
@@ -599,7 +599,7 @@ class RNA_DatasetBaselineSplitssV0(Dataset):
         return len(self.seq)  
     
     def __getitem__(self, idx):
-        seq = self.seq[idx][26:-21]
+        seq = self.seq[idx]
         if self.mask_only:
             mask = torch.zeros(self.Lmax, dtype=torch.bool)
             mask[:len(seq)] = True
@@ -611,8 +611,8 @@ class RNA_DatasetBaselineSplitssV0(Dataset):
         seq = np.pad(seq,(0,self.Lmax-len(seq)))
         bpp = torch.tensor(dot_to_adjacency(self.ss[idx], self.Lmax)).int()
         
-        react = torch.from_numpy(np.stack([self.react_2A3[idx],self.react_DMS[idx]],-1))[26:-21]
-        react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],self.react_err_DMS[idx]],-1))[26:-21]
+        react = torch.from_numpy(np.stack([self.react_2A3[idx],self.react_DMS[idx]],-1))
+        react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],self.react_err_DMS[idx]],-1))
         sn = torch.FloatTensor([self.sn_2A3[idx],self.sn_DMS[idx]])
         
         return {'seq':torch.from_numpy(seq), 'mask':mask, "adj_matrix": bpp}, \
@@ -620,7 +620,7 @@ class RNA_DatasetBaselineSplitssV0(Dataset):
                 'sn':sn, 'mask':mask}
 
 
-# %% ../nbs/00_dataset.ipynb 10
+# %% ../nbs/00_dataset.ipynb 9
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
