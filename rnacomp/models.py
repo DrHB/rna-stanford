@@ -6,7 +6,8 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'to_graph_batch', 'DifformerCustomV0', 'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half',
            'apply_rotary_pos_emb', 'Conv1D', 'ResBlock', 'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2',
            'CustomTransformerV0', 'CustomTransformerV1', 'GAT', 'to_graph_batchv1', 'PytorchBatchWrapper',
-           'RNA_ModelV3', 'GCN', 'LayerNorm', 'GEGLU', 'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6']
+           'RNA_ModelV3', 'GCN', 'LayerNorm', 'GEGLU', 'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6',
+           'RNA_ModelV7']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -1159,3 +1160,55 @@ class RNA_ModelV6(nn.Module):
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
 
+
+
+class RNA_ModelV7(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, graph_layers_every=4, **kwargs):
+        super().__init__()
+
+        self.extractor = Extractor(dim//2)
+
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.graph_layers =PytorchBatchWrapper(
+                    GAT(
+                        in_channels=dim//2,
+                        hidden_channels=dim // 2,
+                        out_channels=dim//2,
+                        num_layers=4,
+                        dropout=0.1,
+                        use_bn=True,
+                        heads=4,
+                        out_heads=1,
+                    )
+        )
+
+        self.proj_out = nn.Linear(dim, 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        x = torch.concat([x, self.graph_layers(x, mask, x0["adj_matrix"])],  -1)
+    
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
