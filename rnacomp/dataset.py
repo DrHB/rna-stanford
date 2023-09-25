@@ -4,7 +4,8 @@
 __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceDataLoader', 'encode_rna_sequence',
            'generate_edge_data', 'RNA_DatasetBaseline', 'RNA_DatasetBaselineSplit', 'RNA_DatasetV0', 'RNA_DatasetV1',
            'RNA_DatasetV0G', 'generate_base_pair_matrix', 'RNA_DatasetBaselineSplitbppV0', 'dot_to_adjacency',
-           'RNA_DatasetBaselineSplitssV0', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp']
+           'RNA_DatasetBaselineSplitssV0', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss',
+           'RNA_Dataset_TestBppSS']
 
 # %% ../nbs/00_dataset.ipynb 2
 import pandas as pd
@@ -676,4 +677,62 @@ class RNA_Dataset_TestBpp(Dataset):
         
         return {'seq':torch.from_numpy(seq), 'mask':mask,  "adj_matrix": bpp}, \
                {'ids':ids}
+               
+class RNA_Dataset_Testss(Dataset):
+    def __init__(self, df, mask_only=False, **kwargs):
+        self.seq_map = {'A':0,'C':1,'G':2,'U':3}
+        df['L'] = df.sequence.apply(len)
+        self.Lmax = df['L'].max()
+        self.df = df
+        self.mask_only = mask_only
+        self.ss = df['ss_roi'].values
+        
+    def __len__(self):
+        return len(self.df)  
+    
+    def __getitem__(self, idx):
+        id_min, id_max, seq = self.df.loc[idx, ['id_min','id_max','sequence']]
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        L = len(seq)
+        mask[:L] = True
+        if self.mask_only: return {'mask':mask},{}
+        ids = np.arange(id_min,id_max+1)    
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        seq = np.pad(seq,(0,self.Lmax-L))
+        ids = np.pad(ids,(0,self.Lmax-L), constant_values=-1)
+        bpp = torch.tensor(dot_to_adjacency(self.ss[idx], self.Lmax)).int()
+        
+        return {'seq':torch.from_numpy(seq), 'mask':mask,  "adj_matrix": bpp}, \
+               {'ids':ids}
+               
+class RNA_Dataset_TestBppSS(Dataset):
+    def __init__(self, df, mask_only=False, **kwargs):
+        self.seq_map = {'A':0,'C':1,'G':2,'U':3}
+        df['L'] = df.sequence.apply(len)
+        self.Lmax = df['L'].max()
+        self.df = df
+        self.mask_only = mask_only
+        
+    def __len__(self):
+        return len(self.df)  
+    
+    def __getitem__(self, idx):
+        id_min, id_max, seq = self.df.loc[idx, ['id_min','id_max','sequence']]
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        L = len(seq)
+        mask[:L] = True
+        if self.mask_only: return {'mask':mask},{}
+        ids = np.arange(id_min,id_max+1)    
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        seq = np.pad(seq,(0,self.Lmax-L))
+        ids = np.pad(ids,(0,self.Lmax-L), constant_values=-1)
+        bpp = self.df['bpp'][idx]
+        bpp = (generate_base_pair_matrix(bpp, self.Lmax) > 0.5).int()
+        ss_adj = torch.tensor(dot_to_adjacency(self.df['ss_roi'][idx], self.Lmax)).int()
+        
+        return {'seq':torch.from_numpy(seq), 'mask':mask,  "adj_matrix": bpp, "ss_adj": ss_adj}, \
+               {'ids':ids}
+               
 
