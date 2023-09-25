@@ -14,4 +14,5 @@
 
 
 > to do: substitue extracter layer with put gat 
+
 > before `exp_10` i used to mask bpp and ss based on this post organizers might score adaptesr as well(https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/discussion/442828#2454599)
