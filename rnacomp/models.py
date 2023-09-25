@@ -5,9 +5,9 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'GraphTransformerAdjacent', 'full_attention_conv', 'gcn_conv', 'DIFFormerConv', 'DIFFormer',
            'to_graph_batch', 'DifformerCustomV0', 'DropPath', 'Mlp', 'RotaryEmbedding', 'rotate_half',
            'apply_rotary_pos_emb', 'Conv1D', 'ResBlock', 'Extractor', 'Block', 'Block_conv', 'RNA_ModelV2',
-           'CustomTransformerV0', 'CustomTransformerV1', 'GAT', 'to_graph_batchv1', 'PytorchBatchWrapper',
-           'RNA_ModelV3', 'RNA_ModelV3SS', 'GCN', 'LayerNorm', 'GEGLU', 'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5',
-           'RNA_ModelV6', 'RNA_ModelV7']
+           'RNA_ModelV2SS', 'CustomTransformerV0', 'CustomTransformerV1', 'GAT', 'to_graph_batchv1',
+           'PytorchBatchWrapper', 'RNA_ModelV3', 'RNA_ModelV3SS', 'GCN', 'LayerNorm', 'GEGLU', 'FeedForwardV0',
+           'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -680,6 +680,52 @@ class RNA_ModelV2(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
         x = self.extractor(x, src_key_padding_mask=~mask)
+        for blk in self.blocks:
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+    
+    
+class RNA_ModelV2SS(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
+        super().__init__()
+        # self.emb = nn.Sequential(nn.Embedding(4,dim//4), Conv1D(dim//4,dim,7,padding=3),
+        #                        nn.LayerNorm(dim), nn.GELU(), Conv1D(dim,dim,3,padding=1))
+        self.seq_extractor = Extractor(dim//2)
+        self.ss_extractor = Extractor(dim//2, 3)
+        # self.pos_enc = SinusoidalPosEmb(dim)
+
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        # self.transformer = nn.TransformerEncoder(
+        #    TransformerEncoderLayer_conv(d_model=dim, nhead=dim//head_size, dim_feedforward=4*dim,
+        #        dropout=0.1, activation=nn.GELU(), batch_first=True, norm_first=True), depth)
+        self.proj_out = nn.Linear(dim, 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        ss = x0["ss_seq"][:, :Lmax]
+        seq = self.seq_extractor(x, src_key_padding_mask=~mask)
+        ss = self.ss_extractor(ss, src_key_padding_mask=~mask)
+        x = torch.concat([seq, ss], dim=-1)
         for blk in self.blocks:
             x = blk(x, key_padding_mask=~mask)
         x = self.proj_out(x)
