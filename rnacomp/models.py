@@ -7,10 +7,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'apply_rotary_pos_emb', 'Conv1D', 'ResBlock', 'Extractor', 'ExtractorV0', 'Block', 'Block_conv',
            'RNA_ModelV2', 'RNA_ModelV2SS', 'RNA_ModelV2SSV1', 'CustomTransformerV0', 'CustomTransformerV1', 'GAT',
            'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3', 'RNA_ModelV3SS', 'GCN', 'LayerNorm', 'GEGLU',
-           'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'ConvFeedForward',
-           'FlashAttention2d', 'Attention2d', 'TriangleAttention', 'RNAformerBlock', 'PosEmbedding',
-           'EmbedSequence2Matrix', 'RNAformerStack', 'load_matching_weights', 'CONFIGRNAFORMER', 'CustomRnaFormer',
-           'CustomRnaFormerV0']
+           'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -337,7 +334,7 @@ class DIFFormer(nn.Module):
     edge_index: 2-dim indices of edges [2, E]
     return y_hat predicted logits [N, C]
     '''
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=2, num_heads=1, kernel='simple',
+    def __init__(self, in_channels, hidden_channels, num_layers=2, num_heads=1, kernel='simple',
                  alpha=0.5, dropout=0.5, use_bn=True, use_residual=True, use_weight=True, use_graph=True):
         super(DIFFormer, self).__init__()
 
@@ -351,7 +348,6 @@ class DIFFormer(nn.Module):
                 DIFFormerConv(hidden_channels, hidden_channels, num_heads=num_heads, kernel=kernel, use_graph=use_graph, use_weight=use_weight))
             self.bns.append(nn.LayerNorm(hidden_channels))
 
-        self.fcs.append(nn.Linear(hidden_channels, out_channels))
 
         self.dropout = dropout
         self.activation = F.relu
@@ -391,8 +387,8 @@ class DIFFormer(nn.Module):
             layer_.append(x)
 
         # output MLP layer
-        x_out = self.fcs[-1](x)
-        return x_out
+
+        return x
 
     def get_attentions(self, x):
         layer_, attentions = [], []
@@ -555,22 +551,26 @@ class Extractor(nn.Sequential):
         for i in [1, 2]:
             self[i].src_key_padding_mask = src_key_padding_mask
         return super().forward(x)
-    
-    
+
+
 class ExtractorV0(nn.Sequential):
     def __init__(self, d_model, in_ch=4):
         super().__init__()
-        self.seq_embed  = nn.Sequential(nn.Embedding(in_ch, d_model // 4),
-                                        Conv1D(d_model // 4, d_model//2, 7, padding=3))
-        self.ss_embed  = nn.Sequential(nn.Embedding(3, d_model // 4),
-                                        Conv1D(d_model // 4, d_model//2, 7, padding=3))
-        
+        self.seq_embed = nn.Sequential(
+            nn.Embedding(in_ch, d_model // 4),
+            Conv1D(d_model // 4, d_model // 2, 7, padding=3),
+        )
+        self.ss_embed = nn.Sequential(
+            nn.Embedding(3, d_model // 4),
+            Conv1D(d_model // 4, d_model // 2, 7, padding=3),
+        )
+
         self.out = ResBlock(d_model)
 
     def forward(self, seq, ss, src_key_padding_mask=None):
         for i in [1, 2]:
             self[i].src_key_padding_mask = src_key_padding_mask
-    
+
         seq = self.seq_embed(seq)
         ss = self.ss_embed(ss)
         x = torch.concat([seq, ss], dim=-1)
@@ -709,16 +709,15 @@ class RNA_ModelV2(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
-    
+
+
 class RNA_ModelV2SS(nn.Module):
     def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
         super().__init__()
         # self.emb = nn.Sequential(nn.Embedding(4,dim//4), Conv1D(dim//4,dim,7,padding=3),
         #                        nn.LayerNorm(dim), nn.GELU(), Conv1D(dim,dim,3,padding=1))
-        self.seq_extractor = Extractor(dim//2)
-        self.ss_extractor = Extractor(dim//2, 3)
+        self.seq_extractor = Extractor(dim // 2)
+        self.ss_extractor = Extractor(dim // 2, 3)
         # self.pos_enc = SinusoidalPosEmb(dim)
 
         self.blocks = nn.ModuleList(
@@ -755,8 +754,8 @@ class RNA_ModelV2SS(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
+
+
 class RNA_ModelV2SSV1(nn.Module):
     def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
         super().__init__()
@@ -797,7 +796,6 @@ class RNA_ModelV2SSV1(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-
 
 
 class CustomTransformerV0(nn.Module):
@@ -935,9 +933,12 @@ class PytorchBatchWrapper(nn.Module):
         super().__init__()
         self.md = md
 
-    def forward(self, seq, mask, adj_matrix):
+    def forward(self, seq, mask, adj_matrix, batch_index=False):
         batch = to_graph_batchv1(seq, mask, adj_matrix)
-        out = self.md(batch.x, batch.edge_index)
+        if batch_index:
+            out = self.md(batch.x, batch.edge_index, batch=batch.batch)
+        else:
+            out = self.md(batch.x, batch.edge_index)
         out, _ = to_dense_batch(out, batch.batch)
         return out
 
@@ -1002,6 +1003,7 @@ class RNA_ModelV3(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+
 
 class RNA_ModelV3SS(nn.Module):
     def __init__(self, dim=192, depth=12, head_size=32, graph_layers_every=4, **kwargs):
@@ -1301,7 +1303,7 @@ class RNA_ModelV6(nn.Module):
                 PytorchBatchWrapper(
                     GCN(
                         dim,
-                        dim//2,
+                        dim // 2,
                         dim,
                         num_layers=depth // graph_layers_every,
                         dropout=0.2,
@@ -1335,12 +1337,11 @@ class RNA_ModelV6(nn.Module):
         return x
 
 
-
 class RNA_ModelV7(nn.Module):
     def __init__(self, dim=192, depth=12, head_size=32, graph_layers=4, **kwargs):
         super().__init__()
 
-        self.extractor = Extractor(dim//2)
+        self.extractor = Extractor(dim // 2)
 
         self.blocks = nn.ModuleList(
             [
@@ -1356,17 +1357,17 @@ class RNA_ModelV7(nn.Module):
             ]
         )
 
-        self.graph_layers =PytorchBatchWrapper(
-                    GAT(
-                        in_channels=dim//2,
-                        hidden_channels=dim // 2,
-                        out_channels=dim//2,
-                        num_layers=graph_layers,
-                        dropout=0.1,
-                        use_bn=True,
-                        heads=4,
-                        out_heads=1,
-                    )
+        self.graph_layers = PytorchBatchWrapper(
+            GAT(
+                in_channels=dim // 2,
+                hidden_channels=dim // 2,
+                out_channels=dim // 2,
+                num_layers=graph_layers,
+                dropout=0.1,
+                use_bn=True,
+                heads=4,
+                out_heads=1,
+            )
         )
 
         self.proj_out = nn.Linear(dim, 2)
@@ -1378,784 +1379,66 @@ class RNA_ModelV7(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
         x = self.extractor(x, src_key_padding_mask=~mask)
-        x = torch.concat([x, self.graph_layers(x, mask, x0["adj_matrix"])],  -1)
-    
+        x = torch.concat([x, self.graph_layers(x, mask, x0["adj_matrix"])], -1)
+
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
 
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
 
 
-# %% ../nbs/01_models.ipynb 4
-from torch.utils.checkpoint import checkpoint
-import warnings
-from termcolor import colored
-import torch.nn.functional as F
-try:
-    from flash_attn.flash_attn_interface import (
-        flash_attn_unpadded_qkvpacked_func,
-        flash_attn_unpadded_kvpacked_func,
-    )
-    from flash_attn.bert_padding import unpad_input, pad_input
-    from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func
-except:
-    warnings.warn(colored("Could not import flash_attn", "magenta"))
-    load_flash_attn_check = False
-
-
-class FeedForward(nn.Module):
-    def __init__(
-        self, model_dim, ff_dim, use_bias, glu, initializer_range, zero_init, n_layers
-    ):
-        super(FeedForward, self).__init__()
-
-        self.glu = glu
-
-        if self.glu:
-            ff_dim_2 = np.exp2(np.ceil(np.log2(256 * 4 / 3))).astype(int)
-            ff_dim_1 = ff_dim_2 * 2
-        else:
-            ff_dim_1, ff_dim_2 = ff_dim, ff_dim
-
-        self.input_norm = nn.LayerNorm(model_dim, eps=1e-6)
-
-        self.linear_1 = nn.Linear(model_dim, ff_dim_1, bias=use_bias)
-        self.linear_2 = nn.Linear(ff_dim_2, model_dim, bias=use_bias)
-        self.act = nn.SiLU()
-
-        self.initialize(zero_init, use_bias, initializer_range, n_layers)
-
-    def initialize(self, zero_init, use_bias, initializer_range, n_layers):
-        nn.init.normal_(self.linear_1.weight, mean=0.0, std=initializer_range)
-
-        if use_bias:
-            nn.init.constant_(self.linear_1.bias, 0.0)
-            nn.init.constant_(self.linear_2.bias, 0.0)
-
-        if zero_init:
-            nn.init.constant_(self.linear_2.weight, 0.0)
-        else:
-            nn.init.normal_(
-                self.linear_2.weight,
-                mean=0.0,
-                std=initializer_range / math.sqrt(2 * n_layers),
-            )
-
-    def forward(self, x):
-        x = self.input_norm(x)
-
-        if self.glu:
-            x = self.linear_1(x)
-            x, gate = x.chunk(2, dim=-1)
-            x = self.act(gate) * x
-        else:
-            x = self.act(self.linear_1(x))
-
-        return self.linear_2(x)
-
-
-class ConvFeedForward(nn.Module):
-    def __init__(
-        self,
-        model_dim,
-        ff_dim,
-        use_bias,
-        initializer_range,
-        n_layers,
-        kernel,
-        zero_init=True,
-    ):
-        super(ConvFeedForward, self).__init__()
-
-        self.zero_init = zero_init
-
-        self.input_norm = nn.GroupNorm(1, model_dim)
-
-        if kernel == 1:
-            self.conv1 = nn.Conv2d(model_dim, ff_dim, kernel_size=1, bias=use_bias)
-            self.conv2 = nn.Conv2d(ff_dim, model_dim, kernel_size=1, bias=use_bias)
-        else:
-            self.conv1 = nn.Conv2d(
-                model_dim,
-                ff_dim,
-                bias=use_bias,
-                kernel_size=kernel,
-                padding=(kernel - 1) // 2,
-            )
-            self.conv2 = nn.Conv2d(
-                ff_dim,
-                model_dim,
-                bias=use_bias,
-                kernel_size=kernel,
-                padding=(kernel - 1) // 2,
-            )
-
-        self.act = nn.SiLU()
-
-        self.initialize(zero_init, use_bias, initializer_range, n_layers)
-
-    def initialize(self, zero_init, use_bias, initializer_range, n_layers):
-        nn.init.normal_(self.conv1.weight, mean=0.0, std=initializer_range)
-
-        if use_bias:
-            nn.init.constant_(self.conv1.bias, 0.0)
-            nn.init.constant_(self.conv2.bias, 0.0)
-
-        if zero_init:
-            nn.init.constant_(self.conv2.weight, 0.0)
-        else:
-            nn.init.normal_(
-                self.conv2.weight,
-                mean=0.0,
-                std=initializer_range / math.sqrt(2 * n_layers),
-            )
-
-    def forward(self, x):
-        x = x.permute(0, 3, 1, 2)
-
-        x = self.input_norm(x)
-        x = self.act(self.conv1(x))
-        x = self.conv2(x)
-        x = x.permute(0, 2, 3, 1)
-        return x
-
-
-class FlashAttention2d(nn.Module):
-    def __init__(
-        self,
-        model_dim,
-        num_head,
-        softmax_scale,
-        zero_init,
-        use_bias,
-        initializer_range,
-        n_layers,
-    ):
-        super().__init__()
-        assert model_dim % num_head == 0
-        assert model_dim % num_head == 0
-        self.key_dim = model_dim // num_head
-        self.value_dim = model_dim // num_head
-
-        self.causal = False
-        self.checkpointing = False
-
-        if softmax_scale:
-            self.softmax_scale = self.key_dim ** (-0.5)
-        else:
-            self.softmax_scale = None
-
-        self.num_head = num_head
-
-        self.Wqkv = nn.Linear(model_dim, 3 * model_dim, bias=use_bias)
-
-        self.out_proj = nn.Linear(model_dim, model_dim, bias=use_bias)
-
-        self.initialize(zero_init, use_bias, initializer_range, n_layers)
-
-    def initialize(self, zero_init, use_bias, initializer_range, n_layers):
-        nn.init.normal_(self.Wqkv.weight, mean=0.0, std=initializer_range)
-
-        if use_bias:
-            nn.init.constant_(self.Wqkv.bias, 0.0)
-            nn.init.constant_(self.out_proj.bias, 0.0)
-
-        if zero_init:
-            nn.init.constant_(self.out_proj.weight, 0.0)
-        else:
-            nn.init.normal_(
-                self.out_proj.weight,
-                mean=0.0,
-                std=initializer_range / math.sqrt(2 * n_layers),
-            )
-
-    def forward(self, pair_act, attention_mask):
-        batch_size = pair_act.shape[0]
-        seqlen = pair_act.shape[1]
-        extended_batch_size = batch_size * seqlen
-
-        qkv = self.Wqkv(pair_act)
-        not_attention_mask = torch.logical_not(attention_mask)
-
-        x_qkv = rearrange(
-            qkv, "b s f ... -> (b s) f ...", b=batch_size, f=seqlen, s=seqlen
-        )
-        key_padding_mask = rearrange(
-            not_attention_mask,
-            "b s f ... -> (b s) f ...",
-            b=batch_size,
-            f=seqlen,
-            s=seqlen,
-        )
-
-        x_unpad, indices, cu_seqlens, max_s = unpad_input(x_qkv, key_padding_mask)
-        x_unpad = rearrange(
-            x_unpad, "nnz (three h d) -> nnz three h d", three=3, h=self.num_head
-        )
-
-        if self.training and self.checkpointing:
-            output_unpad = torch.utils.checkpoint.checkpoint(
-                flash_attn_unpadded_qkvpacked_func,
-                x_unpad,
-                cu_seqlens,
-                max_s,
-                0.0,
-                self.softmax_scale,
-                self.causal,
-                False,
-            )
-        else:
-            output_unpad = flash_attn_unpadded_qkvpacked_func(
-                x_unpad,
-                cu_seqlens,
-                max_s,
-                0.0,
-                softmax_scale=self.softmax_scale,
-                causal=self.causal,
-            )
-
-        pre_pad_latent = rearrange(output_unpad, "nnz h d -> nnz (h d)")
-        padded_latent = pad_input(pre_pad_latent, indices, extended_batch_size, seqlen)
-        output = rearrange(padded_latent, "b f (h d) -> b f h d", h=self.num_head)
-
-        output = rearrange(
-            output, "(b s) f h d -> b s f (h d)", b=batch_size, f=seqlen, s=seqlen
-        )
-
-        return self.out_proj(output)
-
-
-class Attention2d(nn.Module):
-    def __init__(
-        self,
-        model_dim,
-        num_head,
-        softmax_scale,
-        precision,
-        zero_init,
-        use_bias,
-        initializer_range,
-        n_layers,
-    ):
-        super().__init__()
-        assert model_dim % num_head == 0
-        assert model_dim % num_head == 0
-        self.key_dim = model_dim // num_head
-        self.value_dim = model_dim // num_head
-
-        if softmax_scale:
-            self.softmax_scale = torch.sqrt(torch.FloatTensor([self.key_dim]))
-        else:
-            self.softmax_scale = False
-
-        self.num_head = num_head
-        self.model_dim = model_dim
-
-        if precision == "fp32" or precision == 32 or precision == "bf16":
-            self.mask_bias = -1e9
-        elif precision == "fp16" or precision == 16:
-            self.mask_bias = -1e4
-        else:
-            raise UserWarning(
-                f"unknown precision: {precision} . Please us fp16, fp32 or bf16"
-            )
-
-        self.Wqkv = nn.Linear(model_dim, 3 * model_dim, bias=use_bias)
-        self.out_proj = nn.Linear(model_dim, model_dim, bias=use_bias)
-
-        self.initialize(zero_init, use_bias, initializer_range, n_layers)
-
-    def initialize(self, zero_init, use_bias, initializer_range, n_layers):
-        nn.init.normal_(self.Wqkv.weight, mean=0.0, std=initializer_range)
-
-        if use_bias:
-            nn.init.constant_(self.Wqkv.bias, 0.0)
-            nn.init.constant_(self.out_proj.bias, 0.0)
-
-        if zero_init:
-            nn.init.constant_(self.out_proj.weight, 0.0)
-        else:
-            nn.init.normal_(
-                self.out_proj.weight,
-                mean=0.0,
-                std=initializer_range / math.sqrt(2 * n_layers),
-            )
-
-    def forward(self, pair_act, attention_mask):
-        batch_size = pair_act.size(0)
-        N_seq = pair_act.size(1)
-        N_res = pair_act.size(2)
-
-        query, key, value = self.Wqkv(pair_act).split(self.model_dim, dim=3)
-
-        query = query.view(
-            batch_size, N_seq, N_res, self.num_head, self.key_dim
-        ).permute(0, 1, 3, 2, 4)
-        key = key.view(batch_size, N_seq, N_res, self.num_head, self.value_dim).permute(
-            0, 1, 3, 4, 2
-        )
-        value = value.view(
-            batch_size, N_seq, N_res, self.num_head, self.value_dim
-        ).permute(0, 1, 3, 2, 4)
-
-        attn_weights = torch.matmul(query, key)
-
-        if self.softmax_scale:
-            attn_weights = attn_weights / self.softmax_scale.to(pair_act.device)
-
-        if attention_mask is not None:
-            attention_mask = attention_mask[:, :, None, None, :]
-            attn_weights.masked_fill_(attention_mask, self.mask_bias)
-        attn_weights = F.softmax(attn_weights, dim=-1)
-
-        weighted_avg = torch.matmul(attn_weights, value).permute(0, 1, 3, 2, 4)
-
-        output = self.out_proj(
-            weighted_avg.reshape(
-                batch_size, N_seq, N_res, self.num_head * self.value_dim
-            )
-        )
-        return output
-
-
-class TriangleAttention(nn.Module):
-    def __init__(
-        self,
-        model_dim,
-        num_head,
-        orientation,
-        softmax_scale,
-        precision,
-        zero_init,
-        use_bias,
-        flash_attn,
-        initializer_range,
-        n_layers,
-    ):
+class RNA_ModelV8(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, graph_layers=4, **kwargs):
         super().__init__()
 
-        self.model_dim = model_dim
-        self.num_head = num_head
+        self.extractor = Extractor(dim)
 
-        assert orientation in ["per_row", "per_column"]
-        self.orientation = orientation
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
 
-        self.input_norm = nn.LayerNorm(model_dim, eps=1e-6)
-
-        if flash_attn:
-            self.attn = FlashAttention2d(
-                model_dim,
-                num_head,
-                softmax_scale,
-                zero_init,
-                use_bias,
-                initializer_range,
-                n_layers,
+        self.graph_layers = PytorchBatchWrapper(
+            GAT(
+                in_channels=dim,
+                hidden_channels=dim // 2,
+                out_channels=dim,
+                num_layers=graph_layers,
+                dropout=0.4,
+                use_bn=True,
+                heads=4,
+                out_heads=1,
             )
-        else:
-            self.attn = Attention2d(
-                model_dim,
-                num_head,
-                softmax_scale,
-                precision,
-                zero_init,
-                use_bias,
-                initializer_range,
-                n_layers,
-            )
-
-    def forward(self, pair_act, pair_mask, cycle_infer=False):
-        assert len(pair_act.shape) == 4
-
-        if self.orientation == "per_column":
-            pair_act = torch.swapaxes(pair_act, -2, -3)
-            if pair_mask is not None:
-                pair_mask = torch.swapaxes(pair_mask, -1, -2)
-
-        pair_act = self.input_norm(pair_act)
-
-        if self.training and not cycle_infer:
-            pair_act = checkpoint(self.attn, pair_act, pair_mask, use_reentrant=True)
-        else:
-            pair_act = self.attn(pair_act, pair_mask)
-
-        if self.orientation == "per_column":
-            pair_act = torch.swapaxes(pair_act, -2, -3)
-
-        return pair_act
-
-
-class RNAformerBlock(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        ff_dim = int(config.ff_factor * config.model_dim)
-
-        self.attn_pair_row = TriangleAttention(
-            config.model_dim,
-            config.num_head,
-            "per_row",
-            config.softmax_scale,
-            config.precision,
-            config.zero_init,
-            config.use_bias,
-            config.flash_attn,
-            config.initializer_range,
-            config.n_layers,
-        )
-        self.attn_pair_col = TriangleAttention(
-            config.model_dim,
-            config.num_head,
-            "per_column",
-            config.softmax_scale,
-            config.precision,
-            config.zero_init,
-            config.use_bias,
-            config.flash_attn,
-            config.initializer_range,
-            config.n_layers,
         )
 
-        self.pair_dropout_row = nn.Dropout(p=config.resi_dropout / 2)
-        self.pair_dropout_col = nn.Dropout(p=config.resi_dropout / 2)
-
-        if config.ff_kernel:
-            self.pair_transition = ConvFeedForward(
-                config.model_dim,
-                ff_dim,
-                use_bias=config.use_bias,
-                kernel=config.ff_kernel,
-                initializer_range=config.initializer_range,
-                zero_init=config.zero_init,
-                n_layers=config.n_layers,
-            )
-        else:
-            self.pair_transition = FeedForward(
-                config.model_dim,
-                ff_dim,
-                use_bias=config.use_bias,
-                glu=config.use_glu,
-                initializer_range=config.initializer_range,
-                zero_init=config.zero_init,
-                n_layers=config.n_layers,
-            )
-
-        self.res_dropout = nn.Dropout(p=config.resi_dropout)
-
-    def forward(self, pair_act, pair_mask, cycle_infer=False):
-        pair_act = pair_act + self.pair_dropout_row(
-            self.attn_pair_row(pair_act, pair_mask, cycle_infer)
-        )
-        pair_act = pair_act + self.pair_dropout_col(
-            self.attn_pair_col(pair_act, pair_mask, cycle_infer)
-        )
-        pair_act = pair_act + self.res_dropout(self.pair_transition(pair_act))
-
-        return pair_act
-
-
-class ConvFeedForward(nn.Module):
-    def __init__(
-        self,
-        model_dim,
-        ff_dim,
-        use_bias,
-        initializer_range,
-        n_layers,
-        kernel,
-        zero_init=True,
-    ):
-        super(ConvFeedForward, self).__init__()
-
-        self.zero_init = zero_init
-
-        self.input_norm = nn.GroupNorm(1, model_dim)
-
-        if kernel == 1:
-            self.conv1 = nn.Conv2d(model_dim, ff_dim, kernel_size=1, bias=use_bias)
-            self.conv2 = nn.Conv2d(ff_dim, model_dim, kernel_size=1, bias=use_bias)
-        else:
-            self.conv1 = nn.Conv2d(
-                model_dim,
-                ff_dim,
-                bias=use_bias,
-                kernel_size=kernel,
-                padding=(kernel - 1) // 2,
-            )
-            self.conv2 = nn.Conv2d(
-                ff_dim,
-                model_dim,
-                bias=use_bias,
-                kernel_size=kernel,
-                padding=(kernel - 1) // 2,
-            )
-
-        self.act = nn.SiLU()
-
-        self.initialize(zero_init, use_bias, initializer_range, n_layers)
-
-    def initialize(self, zero_init, use_bias, initializer_range, n_layers):
-        nn.init.normal_(self.conv1.weight, mean=0.0, std=initializer_range)
-
-        if use_bias:
-            nn.init.constant_(self.conv1.bias, 0.0)
-            nn.init.constant_(self.conv2.bias, 0.0)
-
-        if zero_init:
-            nn.init.constant_(self.conv2.weight, 0.0)
-        else:
-            nn.init.normal_(
-                self.conv2.weight,
-                mean=0.0,
-                std=initializer_range / math.sqrt(2 * n_layers),
-            )
-
-    def forward(self, x):
-        x = x.permute(0, 3, 1, 2)
-
-        x = self.input_norm(x)
-        x = self.act(self.conv1(x))
-        x = self.conv2(x)
-        x = x.permute(0, 2, 3, 1)
-        return x
-
-
-class PosEmbedding(nn.Module):
-    def __init__(self, vocab, model_dim, max_len, rel_pos_enc, initializer_range):
-        super().__init__()
-
-        self.rel_pos_enc = rel_pos_enc
-        self.max_len = max_len
-
-        self.embed_seq = nn.Embedding(vocab, model_dim)
-
-        self.scale = nn.Parameter(
-            torch.sqrt(torch.FloatTensor([model_dim // 2])), requires_grad=False
-        )
-
-        if rel_pos_enc:
-            self.embed_pair_pos = nn.Linear(max_len, model_dim, bias=False)
-        else:
-            self.embed_pair_pos = nn.Linear(model_dim, model_dim, bias=False)
-
-            pe = torch.zeros(max_len, model_dim)
-            position = torch.arange(0, max_len).unsqueeze(1).type(torch.FloatTensor)
-            div_term = torch.exp(
-                torch.arange(0, model_dim, 2).type(torch.FloatTensor)
-                * -(math.log(10000.0) / model_dim)
-            )
-            pe[:, 0::2] = torch.sin(position * div_term)
-            pe[:, 1::2] = torch.cos(position * div_term)
-            pe = pe.unsqueeze(0)
-            pe = torch.nn.Parameter(pe, requires_grad=False)
-            self.register_buffer("pe", pe)
-
-        self.initialize(initializer_range)  #
-
-    def initialize(self, initializer_range):
-        nn.init.normal_(self.embed_seq.weight, mean=0.0, std=initializer_range)
-        nn.init.normal_(self.embed_pair_pos.weight, mean=0.0, std=initializer_range)
-
-    def relative_position_encoding(self, src_seq):
-        residue_index = torch.arange(src_seq.size()[1], device=src_seq.device).expand(
-            src_seq.size()
-        )
-        rel_pos = F.one_hot(
-            torch.clip(residue_index, min=0, max=self.max_len - 1), self.max_len
-        )
-
-        if isinstance(self.embed_pair_pos.weight, torch.cuda.BFloat16Tensor):
-            rel_pos = rel_pos.type(torch.bfloat16)
-        elif isinstance(self.embed_pair_pos.weight, torch.cuda.HalfTensor):
-            rel_pos = rel_pos.half()
-        else:
-            rel_pos = rel_pos.type(torch.float32)
-
-        pos_encoding = self.embed_pair_pos(rel_pos)
-        return pos_encoding
-
-    def forward(self, src_seq):
-        seq_embed = self.embed_seq(src_seq) * self.scale
-
-        if self.rel_pos_enc:
-            seq_embed = seq_embed + self.relative_position_encoding(src_seq)
-        else:
-            seq_embed = seq_embed + self.embed_pair_pos(self.pe[:, : src_seq.size(1)])
-
-        return seq_embed
-
-
-class EmbedSequence2Matrix(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.src_embed_1 = PosEmbedding(
-            config.seq_vocab_size,
-            config.model_dim,
-            config.max_len,
-            config.rel_pos_enc,
-            config.initializer_range,
-        )
-        self.src_embed_2 = PosEmbedding(
-            config.seq_vocab_size,
-            config.model_dim,
-            config.max_len,
-            config.rel_pos_enc,
-            config.initializer_range,
-        )
-
-        self.norm = nn.LayerNorm(config.model_dim)
-
-    def forward(self, src_seq):
-        seq_1_embed = self.src_embed_1(src_seq)
-        seq_2_embed = self.src_embed_2(src_seq)
-
-        pair_latent = seq_1_embed.unsqueeze(1) + seq_2_embed.unsqueeze(2)
-
-        pair_latent = self.norm(pair_latent)
-
-        return pair_latent
-
-
-class RNAformerStack(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        self.output_ln = nn.LayerNorm(config.model_dim)
-
-        module_list = []
-        for idx in range(config.n_layers):
-            layer = RNAformerBlock(config=config)
-            module_list.append(layer)
-        self.layers = nn.ModuleList(module_list)
-
-    def forward(self, pair_act, pair_mask, cycle_infer=False):
-        for idx, layer in enumerate(self.layers):
-            pair_act = layer(pair_act, pair_mask, cycle_infer=cycle_infer)
-
-        pair_act = self.output_ln(pair_act)
-
-        return pair_act
-    
-
-
-
-def load_matching_weights(model, weights_path):
-    """
-    Load model weights from a given path if they match, otherwise skip.
-    Prints the number of matched and unmatched weights.
-
-    :param model: The PyTorch model for which weights should be loaded.
-    :param weights_path: The path to the saved weights file (.pth or .pt).
-    """
-    # Load the saved state dictionary
-    saved_state_dict = torch.load(weights_path, map_location=torch.device('cpu'))
-
-    # Get the model's state dictionary
-    model_state_dict = model.state_dict()
-
-    # Create a new state dictionary to store matching weights
-    matching_state_dict = {}
-
-    # Initialize counters for matched and unmatched weights
-    matched_weights = 0
-    unmatched_weights = 0
-
-    # Iterate through the saved state dictionary
-    for name, saved_weight in saved_state_dict.items():
-        # Check if the name exists in the model's state dictionary and the shapes match
-        if name in model_state_dict and model_state_dict[name].shape == saved_weight.shape:
-            # If it matches, add it to the matching state dictionary
-            matching_state_dict[name] = saved_weight
-            matched_weights += 1
-        else:
-            #print(f"Skipping weight: {name} - Shape mismatch or not found in model")
-            unmatched_weights += 1
-
-    # Update the model's state dictionary with the matching state dictionary
-    model_state_dict.update(matching_state_dict)
-
-    # Load the updated state dictionary into the model
-    model.load_state_dict(model_state_dict)
-
-    print(f"Matched weights: {matched_weights}")
-    print(f"Unmatched weights: {unmatched_weights}")
-
-class CONFIGRNAFORMER:
-    model_dim = 128  # hidden dimension of transformer
-    n_layers = 6  # number of transformer layers
-    num_head = 4  # number of heads per layer
-    ff_factor = 4  # hidden dim * ff_factor = size of feed-forward layer
-    ff_kernel = 3
-    cycling = False
-    resi_dropout = 0.1
-    embed_dropout = 0.1
-    rel_pos_enc = True  # relative position encoding
-    head_bias = False
-    ln_eps = 1e-5
-    softmax_scale = True
-    key_dim_scaler = True
-    gating = False
-    use_glu = False
-    use_bias = True
-    flash_attn = False
-    initializer_range = 0.02
-    zero_init = False
-    precision = 16
-    seq_vocab_size = 5
-    max_len = 500
-    
-class CustomRnaFormer(nn.Module):
-    def __init__(self, config = CONFIGRNAFORMER):
-        super().__init__()
-        self.seq2mat_embed = EmbedSequence2Matrix(config)
-        self.RNAformer = RNAformerStack(config)
-        self.proj_out = nn.Sequential(
-            nn.LayerNorm(config.model_dim),  # Layer Normalization
-            nn.Linear(config.model_dim, config.model_dim // 2),  # Linear Layer
-            nn.GELU(),  # GeLU activation
-            nn.Linear(config.model_dim // 2, 2),  # Final Linear Layer with 2 outputs
-        )
-
-    def make_pair_mask(self, src, src_len):
-        encode_mask = torch.arange(src.shape[1], device=src.device).expand(
-            src.shape[:2]
-        ) < src_len.unsqueeze(1)
-
-        pair_mask = encode_mask[:, None, :] * encode_mask[:, :, None]
-
-        assert isinstance(pair_mask, torch.BoolTensor) or isinstance(
-            pair_mask, torch.cuda.BoolTensor
-        )
-        return torch.bitwise_not(pair_mask)
-
-    def extract_features(self, x, mask_L):
-        n_n_mask = self.make_pair_mask(x, mask_L)
-        n_n_latent = self.seq2mat_embed(x)
-        n_n_latent.masked_fill_(n_n_mask[:, :, :, None], 0.0)
-        latent = self.RNAformer(
-            pair_act=n_n_latent, pair_mask=n_n_mask, cycle_infer=False
-        )
-        latent.masked_fill_(n_n_mask.unsqueeze(-1), 0.0)
-        return latent.max(2)[0]
+        self.proj_out =  PreNorm(dim, nn.Sequential(
+             nn.Linear(dim, dim // 2),
+             nn.GELU(),
+             nn.Linear(dim // 2, 2)
+        ))
 
     def forward(self, x0):
         mask = x0["mask"]
         L0 = mask.shape[1]
-        Lmax = mask.sum(-1).max() + 5
+        Lmax = mask.sum(-1).max()
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
-        mask_L = x0["mask"].sum(-1)
-        out = self.extract_features(x, mask_L)
-        out = self.proj_out(out)
-        out = F.pad(out, (0, 0, 0, L0 - Lmax, 0, 0))
-    
-        return out
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
 
-def CustomRnaFormerV0():
-    md = CustomRnaFormer()
-    load_matching_weights(md, '/opt/slh/rna/eda/rna_former.pth')
-    return md
+        x = self.graph_layers(x, mask, x0["adj_matrix"])
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
