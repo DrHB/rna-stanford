@@ -7,7 +7,8 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'apply_rotary_pos_emb', 'Conv1D', 'ResBlock', 'Extractor', 'ExtractorV0', 'Block', 'Block_conv',
            'RNA_ModelV2', 'RNA_ModelV2SS', 'RNA_ModelV2SSV1', 'CustomTransformerV0', 'CustomTransformerV1', 'GAT',
            'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3', 'RNA_ModelV3SS', 'GCN', 'LayerNorm', 'GEGLU',
-           'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8', 'RNA_ModelV9']
+           'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8', 'RNA_ModelV9',
+           'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -1501,6 +1502,152 @@ class RNA_ModelV9(nn.Module):
         x = x0["seq"][:, :Lmax]
         x = self.extractor(x, src_key_padding_mask=~mask)
         x = torch.concat([x, self.bpp(x, mask, x0["adj_matrix"]), self.ss(x, mask, x0["ss_adj"])], -1)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+    
+class ScaledSinuEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(1,))
+        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, x):
+        n, device = x.shape[1], x.device
+        t = torch.arange(n, device = device).type_as(self.inv_freq)
+        sinu = einsum('i , j -> i j', t, self.inv_freq)
+        emb = torch.cat((sinu.sin(), sinu.cos()), dim = -1)
+        return emb * self.scale
+
+
+class GATnoRes(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        use_bn=False,
+        heads=2,
+        out_heads=1,
+    ):
+        super().__init__()
+
+        self.convs = nn.ModuleList()
+        self.convs.append(
+            GATConv(
+                in_channels, hidden_channels, dropout=dropout, heads=heads, concat=True
+            )
+        )
+
+        self.bns = nn.ModuleList()
+        self.bns.append(nn.LayerNorm(hidden_channels * heads))
+        for _ in range(num_layers - 2):
+            self.convs.append(
+                GATConv(
+                    hidden_channels * heads,
+                    hidden_channels,
+                    dropout=dropout,
+                    heads=heads,
+                    concat=True,
+                )
+            )
+            self.bns.append(nn.LayerNorm(hidden_channels * heads))
+
+        self.convs.append(
+            GATConv(
+                hidden_channels * heads,
+                out_channels,
+                dropout=dropout,
+                heads=out_heads,
+                concat=False,
+            )
+        )
+
+        self.dropout = dropout
+        self.activation = F.elu
+        self.use_bn = use_bn
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for bn in self.bns:
+            bn.reset_parameters()
+
+    def forward(self, x, edge_index):
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index)
+            if self.use_bn:
+                x = self.bns[i](x)
+            x = self.activation(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](x, edge_index)
+        return x
+
+class RNA_ModelV10(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, graph_layers=4, **kwargs):
+        super().__init__()
+
+        self.extractor = Extractor(dim // 3)
+        self.abs_pos_emb = ScaledSinuEmbedding(dim//3)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bpp = PytorchBatchWrapper(
+            GATnoRes(
+                in_channels=dim // 3,
+                hidden_channels=dim // 2,
+                out_channels=dim // 3,
+                num_layers=graph_layers,
+                dropout=0.1,
+                use_bn=True,
+                heads=4,
+                out_heads=1,
+            )
+        )
+
+        self.ss = PytorchBatchWrapper(
+            GATnoRes(
+                in_channels=dim // 3,
+                hidden_channels=dim // 2,
+                out_channels=dim // 3,
+                num_layers=graph_layers,
+                dropout=0.1,
+                use_bn=True,
+                heads=4,
+                out_heads=1,
+            )
+        )
+        self.proj_out = nn.Linear(dim, 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        graph_x = x + self.abs_pos_emb(x)
+        x = torch.concat([x, self.bpp(graph_x, mask, x0["adj_matrix"]), self.ss(graph_x, mask, x0["ss_adj"])], -1)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
