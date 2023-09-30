@@ -1646,7 +1646,8 @@ class RNA_ModelV10(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
         x = self.extractor(x, src_key_padding_mask=~mask)
-        graph_x = x + self.abs_pos_emb(x)
+        graph_x = x.clone()
+        graph_x = graph_x + self.abs_pos_emb(graph_x)
         x = torch.concat([x, self.bpp(graph_x, mask, x0["adj_matrix"]), self.ss(graph_x, mask, x0["ss_adj"])], -1)
 
         for i, blk in enumerate(self.blocks):
