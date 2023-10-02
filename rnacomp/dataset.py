@@ -6,8 +6,9 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetV0G', 'generate_base_pair_matrix', 'RNA_DatasetBaselineSplitbppV0',
            'generate_base_pair_matrixv1', 'RNA_DatasetBaselineSplitbppV1', 'dot_to_adjacency',
            'RNA_DatasetBaselineSplitssV0', 'RNA_DatasetBaselineSplitssV1', 'RNA_DatasetBaselineSplitbppV2',
-           'dot_to_adjacencyv0', 'RNA_DatasetBaselineSplitssbppV0', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp',
-           'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0']
+           'dot_to_adjacencyv0', 'RNA_DatasetBaselineSplitssbppV0', 'RNA_DatasetBaselineSplitssbppV1',
+           'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS',
+           'RNA_Dataset_TestBppSSFullV0']
 
 # %% ../nbs/00_dataset.ipynb 2
 import pandas as pd
@@ -930,6 +931,60 @@ class RNA_DatasetBaselineSplitssbppV0(Dataset):
         sn = torch.FloatTensor([self.sn_2A3[idx],self.sn_DMS[idx]])
         
         return {'seq':torch.from_numpy(seq), 'mask':mask, "ss_adj": ss_adj, 'adj_matrix': bpp}, \
+               {'react':react, 'react_err':react_err,
+                'sn':sn, 'mask':mask}
+               
+class RNA_DatasetBaselineSplitssbppV1(Dataset):
+    def __init__(self, df, mode='train', seed=2023, fold=0, nfolds=4, mask_only=False, 
+                 sn_train=True, **kwargs):
+        """
+        short sequence without adapters 
+        """
+        self.seq_map = {'A':0,'C':1,'G':2,'U':3}
+        self.Lmax = 206
+        df['L'] = df.sequence.apply(len)
+        df_2A3 = df.loc[df.experiment_type=='2A3_MaP'].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type=='DMS_MaP'].reset_index(drop=True)
+        
+        if mode != 'train' or sn_train:
+            m = (df_2A3['SN_filter'].values > 0) & (df_DMS['SN_filter'].values > 0)
+            df_2A3 = df_2A3.loc[m].reset_index(drop=True)
+            df_DMS = df_DMS.loc[m].reset_index(drop=True)
+        
+        self.bpp = df_2A3['bpp'].values
+        self.seq = df_2A3['sequence'].values
+        self.ss = df_2A3['ss_full'].values
+        self.L = df_2A3['L'].values
+        self.react_2A3 = df_2A3[[c for c in df_2A3.columns if 'reactivity_0' in c]].values
+        self.react_DMS = df_DMS[[c for c in df_DMS.columns if 'reactivity_0' in c]].values
+        self.react_err_2A3 = df_2A3[[c for c in df_2A3.columns if 'reactivity_error_0' in c]].values
+        self.react_err_DMS = df_DMS[[c for c in df_DMS.columns if 'reactivity_error_0' in c]].values
+        self.sn_2A3 = df_2A3['signal_to_noise'].values
+        self.sn_DMS = df_DMS['signal_to_noise'].values
+        self.mask_only = mask_only
+        
+    def __len__(self):
+        return len(self.seq)  
+    
+    def __getitem__(self, idx):
+        seq = self.seq[idx]
+        if self.mask_only:
+            mask = torch.zeros(self.Lmax, dtype=torch.bool)
+            mask[:len(seq)] = True
+            return {'mask':mask},{'mask':mask}
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[:len(seq)] = True
+        seq = np.pad(seq,(0,self.Lmax-len(seq)))
+        ss_adj = torch.tensor(dot_to_adjacencyv0(self.ss[idx], self.Lmax)).int()
+        bpp = generate_base_pair_matrixv1(self.bpp[idx], self.Lmax)
+        
+        react = torch.from_numpy(np.stack([self.react_2A3[idx],self.react_DMS[idx]],-1))
+        react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],self.react_err_DMS[idx]],-1))
+        sn = torch.FloatTensor([self.sn_2A3[idx],self.sn_DMS[idx]])
+        
+        return {'seq':torch.from_numpy(seq), 'mask':mask, "ss_adj": ss_adj, 'bb_matrix_full_prob': bpp}, \
                {'react':react, 'react_err':react_err,
                 'sn':sn, 'mask':mask}
 
