@@ -1126,10 +1126,11 @@ class RNA_Dataset_TestBppSSFullV0(Dataset):
         seq = np.pad(seq,(0,self.Lmax-L))
         ids = np.pad(ids,(0,self.Lmax-L), constant_values=-1)
         bpp = self.df['bpp'][idx]
-        bpp = (generate_base_pair_matrixv1(bpp, self.Lmax) > 0.5).int()
+        bb_matrix_full_prob= generate_base_pair_matrixv1(bpp, self.Lmax)
+        bpp = (bb_matrix_full_prob.clone() > 0.5).int()
         ss_adj = torch.tensor(dot_to_adjacencyv0(self.df['ss_full'][idx], self.Lmax)).int()
         
-        return {'seq':torch.from_numpy(seq), 'mask':mask,  "adj_matrix": bpp, "ss_adj": ss_adj}, \
+        return {'seq':torch.from_numpy(seq), 'mask':mask,  "adj_matrix": bpp, "ss_adj": ss_adj, "bb_matrix_full_prob": bb_matrix_full_prob}, \
                {'ids':ids}
                
 
