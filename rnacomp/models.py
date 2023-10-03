@@ -9,7 +9,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'to_graph_batchv1', 'PytorchBatchWrapper', 'RNA_ModelV3', 'RNA_ModelV3SS', 'GCN', 'LayerNorm', 'GEGLU',
            'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8', 'RNA_ModelV9',
            'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10', 'RNA_ModelV10S', 'RNA_ModelV11', 'BppFeedForwardwithRes',
-           'RNA_ModelV12']
+           'RNA_ModelV12', 'RNA_ModelV13']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -1857,6 +1857,52 @@ class RNA_ModelV12(nn.Module):
             x = blk(x, key_padding_mask=~mask)
             if i < len(self.bb_blocks):
                 x = self.bb_blocks[i](x, bb_matrix_full_prob)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+class RNA_ModelV13(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, bpp_blocks=8, **kwargs):
+        super().__init__()
+
+        self.extractor = Extractor(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+        self.bb_blocks = nn.ModuleList(
+            [BppFeedForwardwithRes(dim) for i in range(bpp_blocks)]
+        )
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bb_matrix_full_prob = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        ss = x0["ss_adj"][:, :Lmax, :Lmax]
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+            if i < len(self.bb_blocks):
+                if i%2 == 0:
+                    print('bb')
+                    x = self.bb_blocks[i](x, bb_matrix_full_prob)
+                else:
+                    print('ss')
+                    x = self.bb_blocks[i](x, ss)
 
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
