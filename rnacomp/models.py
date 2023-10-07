@@ -10,7 +10,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8', 'RNA_ModelV9',
            'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10', 'RNA_ModelV10S', 'RNA_ModelV11', 'BppFeedForwardwithRes',
            'RNA_ModelV12', 'RNA_ModelV13', 'RNA_ModelV14', 'RNA_ModelV15', 'GatedResidualCombination',
-           'EncoderResidualCombBlock', 'RNA_ModelV16']
+           'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17']
 
 # %% ../nbs/01_models.ipynb 1
 import torch
@@ -2058,13 +2058,13 @@ class EncoderResidualCombBlock(nn.Module):
             x = blk(x, key_padding_mask=~mask)
             x = gatedres(x, bpp)
         return x
-    
-    
+
+
 class RNA_ModelV16(nn.Module):
-    def __init__(self, dim=192, depth=12, head_size=32, bppss_layers = 3, **kwargs):
+    def __init__(self, dim=192, depth=12, head_size=32, bppss_layers=3, **kwargs):
         super().__init__()
 
-        self.extractor = Extractor(dim//2)
+        self.extractor = Extractor(dim // 2)
         self.blocks = nn.ModuleList(
             [
                 Block_conv(
@@ -2078,17 +2078,94 @@ class RNA_ModelV16(nn.Module):
                 for i in range(depth)
             ]
         )
+
+        self.ss = EncoderResidualCombBlock(
+            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+        )
+
+        self.bpp = EncoderResidualCombBlock(
+            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        ss = self.ss(x, ss, mask)
+        bpp = self.bpp(x, bpp, mask)
+        x = torch.concat([ss, bpp], -1)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+
+
+class EncoderResidualCombBlockV1(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
+        super().__init__()
+        self.enc = ContinuousTransformerWrapper(
+            dim_in=dim,
+            dim_out=dim,
+            max_seq_len=512,
+            attn_layers=Encoder(
+                dim=dim,
+                depth=depth,
+                heads=dim // head_size,
+                attn_flash=True,
+                rotary_pos_emb=True,
+                attn_gate_values=True,
+                attn_head_scale=True,
+                ff_post_act_ln=True,
+                attn_qk_norm=True,
+                attn_qk_norm_dim_scale=True,  # set this to True, in addition to `attn_qk_norm = True`
+            ),
+        )
+        self.comb = GatedResidualCombination(dim)
+
+    def forward(self, x, bpp, mask):
+        x = self.comb(x, bpp)
+        x = self.enc(x, mask=mask)
+        return x
     
-        self.ss = EncoderResidualCombBlock(dim = dim//2, 
-                                           depth=bppss_layers, 
-                                           head_size=head_size, 
-                                           **kwargs)
-        
-        self.bpp = EncoderResidualCombBlock(dim = dim//2, 
-                                           depth=bppss_layers, 
-                                           head_size=head_size, 
-                                           **kwargs)
-        
+
+
+
+# %% ../nbs/01_models.ipynb 4
+class RNA_ModelV17(nn.Module):
+    def __init__(self, dim=192, depth=12, head_size=32, bppss_layers=3, **kwargs):
+        super().__init__()
+
+        self.extractor = Extractor(dim // 2)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=0.2 * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.ss = EncoderResidualCombBlockV1(
+            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+        )
+
+        self.bpp = EncoderResidualCombBlockV1(
+            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+        )
+
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
 
     def forward(self, x0):
