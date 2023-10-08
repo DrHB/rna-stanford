@@ -2125,14 +2125,20 @@ class EncoderResidualCombBlockV1(nn.Module):
                 attn_head_scale=True,
                 ff_post_act_ln=True,
                 attn_qk_norm=True,
-                attn_qk_norm_dim_scale=True,  # set this to True, in addition to `attn_qk_norm = True`
+                attn_qk_norm_dim_scale=True,  
+                layer_dropout = 0.1,   # stochastic depth - dropout entire layer
+                attn_dropout = 0.1,    # dropout post-attention
             ),
         )
         self.comb = GatedResidualCombination(dim)
 
-    def forward(self, x, bpp, mask):
-        x = self.comb(x, bpp)
-        x = self.enc(x, mask=mask)
+    def forward(self, x, bpp, mask, first=True):
+        if first:
+            x = self.comb(x, bpp)
+            x = self.enc(x, mask=mask)
+        else:
+            x = self.enc(x, mask=mask)
+            x = self.comb(x, bpp) 
         return x
     
 
@@ -2177,8 +2183,8 @@ class RNA_ModelV17(nn.Module):
         bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
         x = self.extractor(x, src_key_padding_mask=~mask)
-        ss = self.ss(x, ss, mask)
-        bpp = self.bpp(x, bpp, mask)
+        ss = self.ss(x, ss, mask, first=True)
+        bpp = self.bpp(x, bpp, mask, first=False)
         x = torch.concat([ss, bpp], -1)
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
