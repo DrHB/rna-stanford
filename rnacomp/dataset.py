@@ -988,7 +988,7 @@ class RNA_DatasetBaselineSplitssbppV1(Dataset):
                {'react':react, 'react_err':react_err,
                 'sn':sn, 'mask':mask}
 
-# %% ../nbs/00_dataset.ipynb 13
+# %% ../nbs/00_dataset.ipynb 11
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {'A':0,'C':1,'G':2,'U':3}
