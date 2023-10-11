@@ -2109,7 +2109,7 @@ class RNA_ModelV16(nn.Module):
 
 
 class EncoderResidualCombBlockV1(nn.Module):
-    def __init__(self, dim=192, depth=12, head_size=32, **kwargs):
+    def __init__(self, dim=192, depth=12, head_size=32, layer_dropout=0.1,attn_dropout =0.1, **kwargs):
         super().__init__()
         self.enc = ContinuousTransformerWrapper(
             dim_in=dim,
@@ -2126,8 +2126,8 @@ class EncoderResidualCombBlockV1(nn.Module):
                 ff_post_act_ln=True,
                 attn_qk_norm=True,
                 attn_qk_norm_dim_scale=True,  
-                layer_dropout = 0.1,   # stochastic depth - dropout entire layer
-                attn_dropout = 0.1,    # dropout post-attention
+                layer_dropout = layer_dropout,   # stochastic depth - dropout entire layer
+                attn_dropout = attn_dropout,    # dropout post-attention
             ),
         )
         self.comb = GatedResidualCombination(dim)
@@ -2146,7 +2146,16 @@ class EncoderResidualCombBlockV1(nn.Module):
 
 # %% ../nbs/01_models.ipynb 4
 class RNA_ModelV17(nn.Module):
-    def __init__(self, dim=192, depth=12, head_size=32, bppss_layers=3, **kwargs):
+    def __init__(
+        self,
+        dim=192,
+        depth=12,
+        head_size=32,
+        bppss_layers=3,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        drop_pat_dropout=0.2,
+    ):
         super().__init__()
 
         self.extractor = Extractor(dim // 2)
@@ -2156,7 +2165,7 @@ class RNA_ModelV17(nn.Module):
                     dim=dim,
                     num_heads=dim // head_size,
                     mlp_ratio=4,
-                    drop_path=0.2 * (i / (depth - 1)),
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
                     init_values=1,
                     drop=0.1,
                 )
@@ -2165,11 +2174,21 @@ class RNA_ModelV17(nn.Module):
         )
 
         self.ss = EncoderResidualCombBlockV1(
-            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+
         )
 
         self.bpp = EncoderResidualCombBlockV1(
-            dim=dim // 2, depth=bppss_layers, head_size=head_size, **kwargs
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+
         )
 
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
@@ -2191,3 +2210,6 @@ class RNA_ModelV17(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+    
+    
+
