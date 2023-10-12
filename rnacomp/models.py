@@ -10,9 +10,12 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'FeedForwardV0', 'RNA_ModelV4', 'RNA_ModelV5', 'RNA_ModelV6', 'RNA_ModelV7', 'RNA_ModelV8', 'RNA_ModelV9',
            'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10', 'RNA_ModelV10S', 'RNA_ModelV11', 'BppFeedForwardwithRes',
            'RNA_ModelV12', 'RNA_ModelV13', 'RNA_ModelV14', 'RNA_ModelV15', 'GatedResidualCombination',
-           'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17']
+           'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17', 'FeedForwardV5',
+           'RNA_ModelV18FM']
 
 # %% ../nbs/01_models.ipynb 1
+import sys
+sys.path.append('/opt/slh/rna/eda/RNA-FM')
 import torch
 from torch import nn, einsum
 from einops import rearrange, repeat
@@ -29,6 +32,7 @@ import numpy as np
 from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 from torch_geometric.nn import GATConv, GCNConv
+import fm
 
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
@@ -2210,6 +2214,42 @@ class RNA_ModelV17(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+    
+    
+class FeedForwardV5(nn.Module):
+    def __init__(self, dim, hidden_dim,dropout = 0.2,  out=2,):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out),
+        )
+    def forward(self, x):
+        return self.net(x)
+    
+    
+class RNA_ModelV18FM(nn.Module):
+    def __init__(self, droupout = 0.2):
+        super().__init__()
+        model, alphabet = fm.pretrained.rna_fm_t12()
+        self.model = model
+        self.out = FeedForwardV5(dim=640, hidden_dim=128, dropout=droupout)
+        
+        
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        L0 = mask.shape[1]
+        x = x0["seq"][:, :Lmax + 2]
+        results = self.model(x, repr_layers=[12])
+        results = results["representations"][12][:, 1:-1, :] #remove start and end token
+        x = self.out(results)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+        
     
     
 
