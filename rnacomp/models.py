@@ -11,7 +11,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10', 'RNA_ModelV10S', 'RNA_ModelV11', 'BppFeedForwardwithRes',
            'RNA_ModelV12', 'RNA_ModelV13', 'RNA_ModelV14', 'RNA_ModelV15', 'GatedResidualCombination',
            'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17', 'FeedForwardV5',
-           'RNA_ModelV18FM']
+           'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM']
 
 # %% ../nbs/01_models.ipynb 1
 import sys
@@ -2113,7 +2113,15 @@ class RNA_ModelV16(nn.Module):
 
 
 class EncoderResidualCombBlockV1(nn.Module):
-    def __init__(self, dim=192, depth=12, head_size=32, layer_dropout=0.1,attn_dropout =0.1, **kwargs):
+    def __init__(
+        self,
+        dim=192,
+        depth=12,
+        head_size=32,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        **kwargs
+    ):
         super().__init__()
         self.enc = ContinuousTransformerWrapper(
             dim_in=dim,
@@ -2129,9 +2137,9 @@ class EncoderResidualCombBlockV1(nn.Module):
                 attn_head_scale=True,
                 ff_post_act_ln=True,
                 attn_qk_norm=True,
-                attn_qk_norm_dim_scale=True,  
-                layer_dropout = layer_dropout,   # stochastic depth - dropout entire layer
-                attn_dropout = attn_dropout,    # dropout post-attention
+                attn_qk_norm_dim_scale=True,
+                layer_dropout=layer_dropout,  # stochastic depth - dropout entire layer
+                attn_dropout=attn_dropout,  # dropout post-attention
             ),
         )
         self.comb = GatedResidualCombination(dim)
@@ -2142,11 +2150,8 @@ class EncoderResidualCombBlockV1(nn.Module):
             x = self.enc(x, mask=mask)
         else:
             x = self.enc(x, mask=mask)
-            x = self.comb(x, bpp) 
+            x = self.comb(x, bpp)
         return x
-    
-
-
 
 # %% ../nbs/01_models.ipynb 4
 class RNA_ModelV17(nn.Module):
@@ -2183,7 +2188,6 @@ class RNA_ModelV17(nn.Module):
             head_size=head_size,
             layer_dropout=layer_dropout,
             attn_dropout=attn_dropout,
-
         )
 
         self.bpp = EncoderResidualCombBlockV1(
@@ -2192,7 +2196,6 @@ class RNA_ModelV17(nn.Module):
             head_size=head_size,
             layer_dropout=layer_dropout,
             attn_dropout=attn_dropout,
-
         )
 
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
@@ -2214,10 +2217,16 @@ class RNA_ModelV17(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
+
+
 class FeedForwardV5(nn.Module):
-    def __init__(self, dim, hidden_dim,dropout = 0.2,  out=2,):
+    def __init__(
+        self,
+        dim,
+        hidden_dim,
+        dropout=0.2,
+        out=2,
+    ):
         super().__init__()
         self.net = nn.Sequential(
             nn.LayerNorm(dim),
@@ -2226,30 +2235,146 @@ class FeedForwardV5(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, out),
         )
+
     def forward(self, x):
         return self.net(x)
-    
-    
+
+
 class RNA_ModelV18FM(nn.Module):
-    def __init__(self, droupout = 0.2):
+    def __init__(self, droupout=0.2):
         super().__init__()
         model, alphabet = fm.pretrained.rna_fm_t12()
         self.model = model
         self.out = FeedForwardV5(dim=640, hidden_dim=128, dropout=droupout)
-        
-        
+
     def forward(self, x0):
         mask = x0["mask"]
         L0 = mask.shape[1]
         Lmax = mask.sum(-1).max()
         L0 = mask.shape[1]
-        x = x0["seq"][:, :Lmax + 2]
+        x = x0["seq"][:, : Lmax + 2]
         results = self.model(x, repr_layers=[12])
-        results = results["representations"][12][:, 1:-1, :] #remove start and end token
+        results = results["representations"][12][
+            :, 1:-1, :
+        ]  # remove start and end token
         x = self.out(results)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-        
-    
-    
 
+
+class EncoderResidualCombBlockV2(nn.Module):
+    def __init__(
+        self,
+        dim_in=192,
+        dim_gate=192,
+        dim=192,
+        depth=12,
+        head_size=32,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        **kwargs
+    ):
+        super().__init__()
+        self.enc = ContinuousTransformerWrapper(
+            dim_in=dim_in,
+            dim_out=dim,
+            max_seq_len=512,
+            attn_layers=Encoder(
+                dim=dim,
+                depth=depth,
+                heads=dim // head_size,
+                attn_flash=True,
+                rotary_pos_emb=True,
+                attn_gate_values=True,
+                attn_head_scale=True,
+                ff_post_act_ln=True,
+                attn_qk_norm=True,
+                attn_qk_norm_dim_scale=True,
+                layer_dropout=layer_dropout,  # stochastic depth - dropout entire layer
+                attn_dropout=attn_dropout,  # dropout post-attention
+            ),
+        )
+        self.comb = GatedResidualCombination(dim_gate)
+
+    def forward(self, x, bpp, mask, first=True):
+        if first:
+            x = self.comb(x, bpp)
+            x = self.enc(x, mask=mask)
+        else:
+            x = self.enc(x, mask=mask)
+            x = self.comb(x, bpp)
+        return x
+
+
+class RNA_ModelV19FM(nn.Module):
+    def __init__(
+        self,
+        dim=384,
+        depth=6,
+        head_size=32,
+        bppss_layers=3,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        drop_pat_dropout=0.2,
+    ):
+        super().__init__()
+        model, alphabet = fm.pretrained.rna_fm_t12()
+        self.model = model
+
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.ss = EncoderResidualCombBlockV2(
+            dim_in=640,
+            dim_gate=640,
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+        )
+
+        self.bpp = EncoderResidualCombBlockV2(
+            dim_in=640,
+            dim_gate=dim // 2,
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        L0 = mask.shape[1]
+        x = x0["seq"][:, : Lmax + 2]
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+        mask = mask[:, :Lmax]
+
+        with torch.no_grad():
+            x = self.model(x, repr_layers=[12])
+            x = x["representations"][12][:, 1:-1, :]  # remove start and end token
+        ss = self.ss(x, ss, mask, first=True)
+        bpp = self.bpp(x, bpp, mask, first=False)
+        x = torch.concat([ss, bpp], -1)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x

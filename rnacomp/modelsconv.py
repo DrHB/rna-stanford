@@ -131,26 +131,28 @@ class U_Net(nn.Module):
         out = torch.transpose(d1, -1, -2) * d1
 
         return out
-    
-    
+
+
 class UnetWrapper2D(nn.Module):
     def __init__(self, md, output_chans=2):
         super().__init__()
         self.md = md
         self.output_chans = output_chans
-        
+
     def do_forward(self, x, crop16, crop):
-        out = torch.zeros(x.shape[0], self.output_chans, x.shape[2], x.shape[3], device=x.device)
+        out = torch.zeros(
+            x.shape[0], self.output_chans, x.shape[2], x.shape[3], device=x.device
+        )
         res = self.md(x[:, :, :crop16, :crop16])
         out[:, :, :crop, :crop] = res[:, :, :crop, :crop]
         return out
-    
+
     def forward(self, xs, crop_to_16, crop_original, original_order):
         res = []
         for x, crop16, crop in zip(xs, crop_to_16, crop_original):
             res.append(self.do_forward(x, crop16, crop))
         return torch.cat(res)[original_order]
-    
+
 
 @torch.no_grad()
 def generate_batches(tensor, nn_out):
@@ -159,19 +161,26 @@ def generate_batches(tensor, nn_out):
         return [nn_out], torch.arange(len(tensor), device=tensor.device)
     sorted_tensor, order = tensor.sort()
     nn_out = nn_out.index_select(0, order)
-    
+
     # Find the change points
     diff = torch.cat([torch.tensor([1]), torch.diff(sorted_tensor)])
     change_indices = torch.where(diff != 0)[0]
     change_indices = torch.cat([change_indices, torch.tensor([len(tensor)])])
-    b = [nn_out[change_indices[i]:change_indices[i+1]] for i in range(len(change_indices)-1)]
+    b = [
+        nn_out[change_indices[i] : change_indices[i + 1]]
+        for i in range(len(change_indices) - 1)
+    ]
     return b, order.argsort()
 
 
 def make_pair_mask(seq, seq_len):
-    encode_mask = torch.arange(seq.shape[1], device=seq.device).expand(seq.shape[:2]) < seq_len.unsqueeze(1)
+    encode_mask = torch.arange(seq.shape[1], device=seq.device).expand(
+        seq.shape[:2]
+    ) < seq_len.unsqueeze(1)
     pair_mask = encode_mask[:, None, :] * encode_mask[:, :, None]
-    assert isinstance(pair_mask, torch.BoolTensor) or isinstance(pair_mask, torch.cuda.BoolTensor)
+    assert isinstance(pair_mask, torch.BoolTensor) or isinstance(
+        pair_mask, torch.cuda.BoolTensor
+    )
     return torch.bitwise_not(pair_mask)
 
 
@@ -194,23 +203,23 @@ class ScaledSinuEmbedding(nn.Module):
         return emb * self.scale
 
 
-
 class CustomEmbedding(nn.Module):
-    def __init__(self, dim, vocab =4):
+    def __init__(self, dim, vocab=4):
         super().__init__()
         self.embed_seq = nn.Embedding(vocab, dim)
         self.pos_enc = ScaledSinuEmbedding(dim)
+
     def forward(self, x):
         x = self.embed_seq(x)
         x = x + self.pos_enc(x)
         return x
-    
-    
+
+
 class SeqToImage(nn.Module):
     def __init__(self, dim, vocab=4):
         super().__init__()
-        self.embed_h = CustomEmbedding(dim = dim, vocab = vocab)
-        self.embed_w = CustomEmbedding(dim = dim, vocab = vocab)
+        self.embed_h = CustomEmbedding(dim=dim, vocab=vocab)
+        self.embed_w = CustomEmbedding(dim=dim, vocab=vocab)
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, seq, mask):
@@ -218,11 +227,11 @@ class SeqToImage(nn.Module):
         seq_w = self.embed_w(seq)
         x = seq_h.unsqueeze(1) + seq_w.unsqueeze(2)
         x = self.norm(x)
-        x.masked_fill_(mask[:, :, :, None], 0.0) #bs, h, w, dim
-        x = x.permute(0, 3, 1, 2) #bs, dim, h, w
+        x.masked_fill_(mask[:, :, :, None], 0.0)  # bs, h, w, dim
+        x = x.permute(0, 3, 1, 2)  # bs, dim, h, w
         return x
-    
-    
+
+
 class Attn_pool(nn.Module):
     def __init__(self, n):
         super().__init__()
@@ -243,7 +252,7 @@ class Attn_pool(nn.Module):
 
 
 class FeedForwardV5(nn.Module):
-    def __init__(self, dim, hidden_dim,dropout = 0.2,  out=2):
+    def __init__(self, dim, hidden_dim, dropout=0.2, out=2):
         super().__init__()
         self.net = nn.Sequential(
             nn.LayerNorm(dim),
@@ -252,8 +261,10 @@ class FeedForwardV5(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, out),
         )
+
     def forward(self, x):
         return self.net(x)
+
 
 class RnaModelConvV0(nn.Module):
     def __init__(self, embed_size, conv_out=8, vecob_size=4):
@@ -267,7 +278,6 @@ class RnaModelConvV0(nn.Module):
         L_seq = batch["mask"].sum(1)
         L0 = batch["mask"].shape[1]
 
-
         crop_to_original = L_seq.unique()  # unique lengths
         crop_to_16 = [
             ((i // 16) + 1) * 16 for i in crop_to_original
@@ -276,9 +286,7 @@ class RnaModelConvV0(nn.Module):
 
         # make a square mask [bs, crop_to_16[-1], crop_to_16[-1]]  #crop_to_16[-1] is the largest 16 multiple
         square_mask = make_pair_mask(seq, L_seq)
-        
-        
-        
+
         x = self.seq_to_image(seq, square_mask)
         x, idc = generate_batches(L_seq, x)
         x = self.md(x, crop_to_16, crop_to_original, idc)
@@ -286,4 +294,3 @@ class RnaModelConvV0(nn.Module):
         x = self.out(x.permute(0, 2, 1))
         x = F.pad(x, (0, 0, 0, L0 - x.shape[1], 0, 0))
         return x
-        
