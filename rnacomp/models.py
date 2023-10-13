@@ -11,7 +11,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'ScaledSinuEmbedding', 'GATnoRes', 'RNA_ModelV10', 'RNA_ModelV10S', 'RNA_ModelV11', 'BppFeedForwardwithRes',
            'RNA_ModelV12', 'RNA_ModelV13', 'RNA_ModelV14', 'RNA_ModelV15', 'GatedResidualCombination',
            'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17', 'FeedForwardV5',
-           'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM']
+           'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM', 'RNA_ModelV20']
 
 # %% ../nbs/01_models.ipynb 1
 import sys
@@ -2370,6 +2370,71 @@ class RNA_ModelV19FM(nn.Module):
         with torch.no_grad():
             x = self.model(x, repr_layers=[12])
             x = x["representations"][12][:, 1:-1, :]  # remove start and end token
+        ss = self.ss(x, ss, mask, first=True)
+        bpp = self.bpp(x, bpp, mask, first=False)
+        x = torch.concat([ss, bpp], -1)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+    
+class RNA_ModelV20(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=12,
+        head_size=32,
+        bppss_layers=3,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        drop_pat_dropout=0.2,
+    ):
+        super().__init__()
+
+        self.extractor = Extractor(dim // 2)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.ss = EncoderResidualCombBlockV1(
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+        )
+
+        self.bpp = EncoderResidualCombBlockV1(
+            dim=dim // 2,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        ss = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        x = self.extractor(x, src_key_padding_mask=~mask)
         ss = self.ss(x, ss, mask, first=True)
         bpp = self.bpp(x, bpp, mask, first=False)
         x = torch.concat([ss, bpp], -1)
