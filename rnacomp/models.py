@@ -2367,9 +2367,9 @@ class RNA_ModelV19FM(nn.Module):
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
         mask = mask[:, :Lmax]
 
-        with torch.no_grad():
-            x = self.model(x, repr_layers=[12])
-            x = x["representations"][12][:, 1:-1, :]  # remove start and end token
+
+        x = self.model(x, repr_layers=[12])
+        x = x["representations"][12][:, 1:-1, :]  # remove start and end token
         ss = self.ss(x, ss, mask, first=True)
         bpp = self.bpp(x, bpp, mask, first=False)
         x = torch.concat([ss, bpp], -1)
