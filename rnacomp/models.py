@@ -12,7 +12,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'RNA_ModelV12', 'RNA_ModelV13', 'RNA_ModelV14', 'RNA_ModelV15', 'GatedResidualCombination',
            'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17', 'FeedForwardV5',
            'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM', 'RNA_ModelV20', 'ExtractorFM',
-           'RNA_ModelV21FM', 'RNA_ModelV22FM']
+           'RNA_ModelV21FM', 'RNA_ModelV22FM', 'RNA_ModelV23']
 
 # %% ../nbs/01_models.ipynb 1
 import sys
@@ -2121,6 +2121,7 @@ class EncoderResidualCombBlockV1(nn.Module):
         head_size=32,
         layer_dropout=0.1,
         attn_dropout=0.1,
+        ff_dropout = 0.0,
         **kwargs
     ):
         super().__init__()
@@ -2141,6 +2142,7 @@ class EncoderResidualCombBlockV1(nn.Module):
                 attn_qk_norm_dim_scale=True,
                 layer_dropout=layer_dropout,  # stochastic depth - dropout entire layer
                 attn_dropout=attn_dropout,  # dropout post-attention
+                ff_dropout =ff_dropout,
             ),
         )
         self.comb = GatedResidualCombination(dim)
@@ -2586,3 +2588,84 @@ class RNA_ModelV22FM(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+    
+    
+class RNA_ModelV23(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=12,
+        head_size=32,
+        bppss_layers=3,
+        layer_dropout=0.1,
+        attn_dropout=0.1,
+        ff_dropout = 0.0,
+        drop_pat_dropout=0.2,
+    ):
+        super().__init__()
+
+        self.extractor = Extractor(dim // 3)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=0.1,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.ss = EncoderResidualCombBlockV1(
+            dim=dim // 3,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+            ff_dropout = ff_dropout,
+        )
+        
+        self.extra_bpp = EncoderResidualCombBlockV1(
+            dim=dim // 3,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+            ff_dropout = ff_dropout,
+        )
+
+        self.bpp = EncoderResidualCombBlockV1(
+            dim=dim // 3,
+            depth=bppss_layers,
+            head_size=head_size,
+            layer_dropout=layer_dropout,
+            attn_dropout=attn_dropout,
+            ff_dropout = ff_dropout,
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        extra_bpp = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+        
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        extra_bpp = self.extra_bpp(x, extra_bpp, mask, first=True)
+        ss = self.ss(x, ss, mask, first=True)
+        bpp = self.bpp(x, bpp, mask, first=False)
+        x = torch.concat([extra_bpp, ss, bpp], -1)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
