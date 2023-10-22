@@ -11,7 +11,7 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetBaselineSplitssbppV3', 'RNA_DatasetBaselineSplitssbppV4', 'RNA_DatasetBaselineSplitssbppV5',
            'RNA_DatasetBaselineFM', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss',
            'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0', 'RNA_Dataset_TestBppSSFullV1',
-           'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3']
+           'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3', 'RNA_Dataset_TestBppSSFullV4']
 
 # %% ../nbs/00_dataset.ipynb 2
 import pandas as pd
@@ -693,7 +693,7 @@ def generate_base_pair_matrixv1(file_path, L):
     # Find the largest position in the 'pos1' column
     largest_position = data["pos1"].max()
 
-    ids = torch.from_numpy(data[["pos1", "pos2"]].values)
+    ids = torch.from_numpy(data[["pos1", "pos2"]].values.astype(np.int))
     matrix = torch.zeros((L, L))
     matrix[ids[:, 0] - 1, ids[:, 1] - 1] = torch.from_numpy(data["prob"].values).float()
     matrix[ids[:, 1] - 1, ids[:, 0] - 1] = torch.from_numpy(data["prob"].values).float()
@@ -1686,6 +1686,8 @@ class RNA_DatasetBaselineSplitssbppV4(Dataset):
         }, {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
         
         
+
+from copy import deepcopy        
 class RNA_DatasetBaselineSplitssbppV5(Dataset):
     def __init__(
         self,
@@ -1768,13 +1770,19 @@ class RNA_DatasetBaselineSplitssbppV5(Dataset):
         )
         sn = torch.FloatTensor([self.sn_2A3[idx], self.sn_DMS[idx]])
 
-        return {
+        return deepcopy({
             "seq": torch.from_numpy(seq),
             "mask": mask,
             "ss_adj": ss_adj,
             "bb_matrix_full_prob": bpp,
             "bb_matrix_full_prob_extra": bpp_extra,
-        }, {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
+        }), {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
+        
+        
+
+
+        
+
 
 
 class RNA_DatasetBaselineFM(Dataset):
@@ -1862,7 +1870,7 @@ class RNA_DatasetBaselineFM(Dataset):
             "bb_matrix_full_prob": bpp,
         }, {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
 
-# %% ../nbs/00_dataset.ipynb 8
+# %% ../nbs/00_dataset.ipynb 10
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
@@ -2143,6 +2151,64 @@ class RNA_Dataset_TestBppSSFullV3(Dataset):
         mask_only=False,
         extra_bpp_path=Path("../eda/bpp"),
         extra_bpp=["rnafm"],
+        **kwargs,
+    ):
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        df["L"] = df.sequence.apply(len)
+        self.Lmax = df["L"].max()
+        self.df = df
+        self.mask_only = mask_only
+        self.extra_bpp = extra_bpp
+        self.extra_bpp_path = extra_bpp_path
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        id_min, id_max, seq = self.df.loc[idx, ["id_min", "id_max", "sequence"]]
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        L = len(seq)
+        mask[:L] = True
+        if self.mask_only:
+            return {"mask": mask}, {}
+        ids = np.arange(id_min, id_max + 1)
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        seq = np.pad(seq, (0, self.Lmax - L))
+        ids = np.pad(ids, (0, self.Lmax - L), constant_values=-1)
+        bpp = self.df["bpp"][idx]
+        bpp_ = generate_base_pair_matrixv1(bpp, self.Lmax)
+        bpp_extra = [
+            extra_bpp_from_numpy(self.extra_bpp_path / f"{i}/{bpp.stem}.npy", self.Lmax, seq_len=L )
+            for i in self.extra_bpp
+        ]
+        bpp_extra = torch.stack([*bpp_extra], dim=0).mean(0).float()
+        bb_matrix_full_prob = bpp_.float()
+
+        bpp = (bb_matrix_full_prob.clone() > 0.5).int()
+        ss_adj = torch.tensor(
+            dot_to_adjacencyv0(self.df["ss_full"][idx], self.Lmax)
+        ).int()
+
+        return {
+            "seq": torch.from_numpy(seq),
+            "mask": mask,
+            "adj_matrix": bpp,
+            "ss_adj": ss_adj,
+            "bb_matrix_full_prob": bb_matrix_full_prob,
+            "bb_matrix_full_prob_extra": bpp_extra,
+        }, {"ids": ids}
+        
+        
+        
+
+class RNA_Dataset_TestBppSSFullV4(Dataset):
+    def __init__(
+        self,
+        df,
+        mask_only=False,
+        extra_bpp_path=Path("../eda/bpp"),
+        extra_bpp=["rnafm", "vienna_2", "contrafold_2", "rnaformer"],
         **kwargs,
     ):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
