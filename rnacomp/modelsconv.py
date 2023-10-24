@@ -4,7 +4,8 @@
 __all__ = ['good_luck', 'conv_block', 'up_conv', 'U_Net', 'UnetWrapper2D', 'generate_batches', 'make_pair_mask',
            'ScaledSinuEmbedding', 'CustomEmbedding', 'SeqToImage', 'Attn_pool', 'FeedForwardV5', 'RnaModelConvV0',
            'SELayer', 'Conv1D', 'ResBlock', 'Extractor', 'LocalBlock', 'EffBlock', 'MappingBlock', 'ResidualConcat',
-           'LegNet', 'RnaModelConvV1']
+           'LegNet', 'RnaModelConvV1', 'EffBlockV2', 'LocalBlockV2', 'ConvolutionConcatBlockV2', 'CustomConvdV2',
+           'RnaModelConvV2']
 
 # %% ../nbs/01_modelsconv.ipynb 1
 import torch
@@ -296,34 +297,35 @@ class RnaModelConvV0(nn.Module):
         x = self.out(x.permute(0, 2, 1))
         x = F.pad(x, (0, 0, 0, L0 - x.shape[1], 0, 0))
         return x
-    
-    
+
 
 class SELayer(nn.Module):
     def __init__(self, inp, oup, reduction=4):
         super().__init__()
 
         # self.avg_pool = nn.AdaptiveAvgPool1d(1)
-        
+
         self.fc = nn.Sequential(
-                nn.Linear(oup, int(inp // reduction)),
-                nn.SiLU(),
-                nn.Linear(int(inp // reduction), oup),
-
-                # Concater(Bilinear(int(inp // reduction), int(inp // reduction // 2), rank=0.5, bias=True)),
-                # nn.SiLU(),
-                # nn.Linear(int(inp // reduction) +  int(inp // reduction // 2), oup),
-
-                nn.Sigmoid()
+            nn.Linear(oup, int(inp // reduction)),
+            nn.SiLU(),
+            nn.Linear(int(inp // reduction), oup),
+            # Concater(Bilinear(int(inp // reduction), int(inp // reduction // 2), rank=0.5, bias=True)),
+            # nn.SiLU(),
+            # nn.Linear(int(inp // reduction) +  int(inp // reduction // 2), oup),
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
-        b, c, _, = x.size()
+        (
+            b,
+            c,
+            _,
+        ) = x.size()
         y = x.view(b, c, -1).mean(dim=2)
         y = self.fc(y).view(b, c, 1)
         return x * y
-    
-    
+
+
 class Conv1D(nn.Conv1d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -340,6 +342,7 @@ class Conv1D(nn.Conv1d):
                 torch.zeros_like(x),
                 x,
             )
+
         return super().forward(x.permute(0, 2, 1)).permute(0, 2, 1)
 
 
@@ -513,32 +516,6 @@ from typing import Type
 
 
 class LegNet(nn.Module):
-    """
-    LegNet neural network.
-
-    Parameters
-    ----------
-    use_single_channel : bool
-        If True, singleton channel is used.
-    block_sizes : list, optional
-        List containing block sizes. The default is [256, 256, 128, 128, 64, 64, 32, 32].
-    ks : int, optional
-        Kernel size of convolutional layers. The default is 5.
-    resize_factor : int, optional
-        Resize factor used in a high-dimensional middle layer of an EffNet-like block. The default is 4.
-    activation : nn.Module, optional
-        Activation function. The default is nn.SiLU.
-    filter_per_group : int, optional
-        Number of filters per group in a middle convolutiona layer of an EffNet-like block. The default is 2.
-    se_reduction : int, optional
-        Reduction number used in SELayer. The default is 4.
-    final_ch : int, optional
-        Number of channels in the final output convolutional channel. The default is 18.
-    bn_momentum : float, optional
-        BatchNorm momentum. The default is 0.1.
-
-    """
-
     __constants__ = "resize_factor"
 
     def __init__(
@@ -634,4 +611,196 @@ class RnaModelConvV1(nn.Module):
         x = self.extractor(x, src_key_padding_mask=~mask)
         x = self.cnn_model(x)
         x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+
+
+class EffBlockV2(nn.Sequential):
+    def __init__(
+        self,
+        in_ch,
+        ks,
+        resize_factor,
+        filter_per_group,
+        activation,
+        out_ch=None,
+        se_reduction=None,
+        se_type="simple",
+        inner_dim_calculation="out",
+    ):
+        self.in_ch = in_ch
+        self.out_ch = self.in_ch if out_ch is None else out_ch
+        self.resize_factor = resize_factor
+        self.se_reduction = resize_factor if se_reduction is None else se_reduction
+        self.ks = ks
+        self.inner_dim_calculation = inner_dim_calculation
+
+        if inner_dim_calculation == "out":
+            self.inner_dim = self.out_ch * self.resize_factor
+        elif inner_dim_calculation == "in":
+            self.inner_dim = self.in_ch * self.resize_factor
+        else:
+            raise Exception(f"Wrong inner_dim_calculation: {inner_dim_calculation}")
+
+        self.filter_per_group = filter_per_group
+
+        super().__init__(
+            Conv1D(
+                in_channels=self.in_ch,
+                out_channels=self.inner_dim,
+                kernel_size=1,
+                padding="same",
+                bias=False,
+            ),
+            nn.LayerNorm(self.inner_dim),
+            activation(),
+            Conv1D(
+                in_channels=self.inner_dim,
+                out_channels=self.inner_dim,
+                kernel_size=ks,
+                groups=self.inner_dim // self.filter_per_group,
+                padding="same",
+                bias=False,
+            ),
+            nn.LayerNorm(self.inner_dim),
+            activation(),
+            Conv1D(
+                in_channels=self.inner_dim,
+                out_channels=self.in_ch,
+                kernel_size=1,
+                padding="same",
+                bias=False,
+            ),
+            nn.LayerNorm(self.in_ch),
+            activation(),
+        )
+
+        self.src_key_padding_mask = None
+
+    def forward(self, x, src_key_padding_mask=None):
+        for i in [0, 3, 6]:
+            self[i].src_key_padding_mask = src_key_padding_mask
+        return super().forward(x)
+
+
+class LocalBlockV2(nn.Sequential):
+    def __init__(self, in_ch, ks, activation, out_ch=None):
+        self.in_ch = in_ch
+        self.out_ch = self.in_ch if out_ch is None else out_ch
+        self.ks = ks
+
+        super().__init__(
+            Conv1D(
+                in_channels=self.in_ch,
+                out_channels=self.out_ch,
+                kernel_size=self.ks,
+                padding="same",
+                bias=False,
+            ),
+            nn.LayerNorm(self.out_ch),
+            activation(),
+        )
+
+    def forward(self, x, src_key_padding_mask=None):
+        for i in [0]:
+            self[i].src_key_padding_mask = src_key_padding_mask
+        return super().forward(x)
+
+
+class ConvolutionConcatBlockV2(nn.Module):
+    def __init__(
+        self,
+        in_ch=256,
+        ks=7,
+        resize_factor=4,
+        filter_per_group=1,
+        activation=nn.GELU,
+        out_ch=None,
+    ):
+        super().__init__()
+        self.effblock = EffBlockV2(
+            in_ch=in_ch,
+            ks=ks,
+            resize_factor=resize_factor,
+            filter_per_group=filter_per_group,
+            activation=activation,
+            out_ch=out_ch,
+        )
+
+        self.localblock = LocalBlockV2(
+            in_ch=in_ch * 2, ks=ks, activation=activation, out_ch=out_ch
+        )
+
+    def forward(self, x, src_key_padding_mask=None):
+        res = x
+        x = self.effblock(x, src_key_padding_mask=src_key_padding_mask)
+        x = torch.cat([x, res], dim=-1)
+        x = self.localblock(x, src_key_padding_mask=src_key_padding_mask)
+        return x
+
+
+class CustomConvdV2(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        block_sizes: list[int] = [256, 128, 128, 64, 64, 64, 64],
+        ks: int = 7,
+        resize_factor: int = 4,
+        activation: Type[nn.Module] = nn.SiLU,
+    ):
+        super().__init__()
+
+        self.stem_block = LocalBlockV2(
+            in_ch=dim, out_ch=block_sizes[0], ks=ks, activation=activation
+        )
+
+        self.blocks = nn.ModuleList()
+        for ind, (prev_sz, sz) in enumerate(zip(block_sizes[:-1], block_sizes[1:])):
+            block = ConvolutionConcatBlockV2(
+                in_ch=prev_sz,
+                out_ch=sz,
+                ks=ks,
+                resize_factor=resize_factor,
+                activation=activation,
+            )
+            self.blocks.append(block)
+
+    def forward(self, x, src_key_padding_mask=None):
+        x = self.stem_block(x, src_key_padding_mask=src_key_padding_mask)
+        for block in self.blocks:
+            x = block(x, src_key_padding_mask=src_key_padding_mask)
+        return x
+
+
+class RnaModelConvV2(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        block_sizes=[256, 128, 128, 64, 64, 64, 64],
+        resize_factor=4,
+        ks=7,
+        activation=nn.GELU,
+    ):
+        super().__init__()
+        self.extractor = Extractor(dim)
+        self.cnn_model = CustomConvdV2(
+            dim=dim,
+            block_sizes=block_sizes,
+            resize_factor=resize_factor,
+            ks=ks,
+            activation=activation,
+        )
+        self.proj_out = nn.Sequential(nn.Linear(block_sizes[-1], 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        x = self.cnn_model(x, src_key_padding_mask=~mask)
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
