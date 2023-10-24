@@ -6,11 +6,11 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetV0G', 'generate_base_pair_matrix', 'RNA_DatasetBaselineSplitbppV0',
            'generate_base_pair_matrixv1', 'RNA_DatasetBaselineSplitbppV1', 'dot_to_adjacency',
            'RNA_DatasetBaselineSplitssV0', 'RNA_DatasetBaselineSplitssV1', 'RNA_DatasetBaselineSplitbppV2',
-           'dot_to_adjacencyv0', 'RNA_DatasetBaselineSplitssbppV0', 'RNA_DatasetBaselineSplitssbppV1', 'load_rnafm',
-           'extra_bpp_from_numpy', 'RNA_DatasetBaselineSplitssbppV1R', 'RNA_DatasetBaselineSplitssbppV2',
-           'RNA_DatasetBaselineSplitssbppV3', 'RNA_DatasetBaselineSplitssbppV4', 'RNA_DatasetBaselineSplitssbppV5',
-           'RNA_DatasetBaselineFM', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss',
-           'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0', 'RNA_Dataset_TestBppSSFullV1',
+           'dot_to_adjacencyv0', 'RNA_DatasetBaselineSplitssbppV0Conv', 'RNA_DatasetBaselineSplitssbppV0',
+           'RNA_DatasetBaselineSplitssbppV1', 'load_rnafm', 'extra_bpp_from_numpy', 'RNA_DatasetBaselineSplitssbppV1R',
+           'RNA_DatasetBaselineSplitssbppV2', 'RNA_DatasetBaselineSplitssbppV3', 'RNA_DatasetBaselineSplitssbppV4',
+           'RNA_DatasetBaselineSplitssbppV5', 'RNA_DatasetBaselineFM', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp',
+           'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0', 'RNA_Dataset_TestBppSSFullV1',
            'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3', 'RNA_Dataset_TestBppSSFullV4']
 
 # %% ../nbs/00_dataset.ipynb 2
@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from sklearn.model_selection import KFold
 import random
+from copy import deepcopy   
 
 # %% ../nbs/00_dataset.ipynb 4
 def good_luck():
@@ -1114,6 +1115,83 @@ def dot_to_adjacencyv0(dot_notation, n):
 
     return adjacency_matrix
 
+class RNA_DatasetBaselineSplitssbppV0Conv(Dataset):
+    def __init__(
+        self,
+        df,
+        mode="train",
+        seed=2023,
+        fold=0,
+        nfolds=4,
+        mask_only=False,
+        sn_train=True,
+        **kwargs,
+    ):
+        """
+        short sequence without adapters
+        """
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        self.Lmax = 206
+        df["L"] = df.sequence.apply(len)
+        df_2A3 = df.loc[df.experiment_type == "2A3_MaP"].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type == "DMS_MaP"].reset_index(drop=True)
+
+        if mode != "train" or sn_train:
+            m = (df_2A3["SN_filter"].values > 0) & (df_DMS["SN_filter"].values > 0)
+            df_2A3 = df_2A3.loc[m].reset_index(drop=True)
+            df_DMS = df_DMS.loc[m].reset_index(drop=True)
+
+        self.bpp = df_2A3["bpp"].values
+        self.seq = df_2A3["sequence"].values
+        self.ss = df_2A3["ss_full"].values
+        self.L = df_2A3["L"].values
+        self.react_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_0" in c]
+        ].values
+        self.react_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_0" in c]
+        ].values
+        self.react_err_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_error_0" in c]
+        ].values
+        self.react_err_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_error_0" in c]
+        ].values
+        self.sn_2A3 = df_2A3["signal_to_noise"].values
+        self.sn_DMS = df_DMS["signal_to_noise"].values
+        self.mask_only = mask_only
+
+    def __len__(self):
+        return len(self.seq)
+
+    def __getitem__(self, idx):
+        seq = self.seq[idx]
+        if self.mask_only:
+            mask = torch.zeros(self.Lmax, dtype=torch.bool)
+            mask[: len(seq)] = True
+            return {"mask": mask}, {"mask": mask}
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[: len(seq)] = True
+        seq_holder = np.zeros(self.Lmax, dtype=int)
+        seq_holder[: len(seq)] = seq
+
+
+        react = torch.from_numpy(
+            np.stack([self.react_2A3[idx], self.react_DMS[idx]], -1)
+        )
+        react_err = torch.from_numpy(
+            np.stack([self.react_err_2A3[idx], self.react_err_DMS[idx]], -1)
+        )
+        sn = torch.FloatTensor([self.sn_2A3[idx], self.sn_DMS[idx]])
+
+        return deepcopy({
+            "seq": torch.from_numpy(seq_holder),
+            "mask": mask,
+        }), {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
+
+
 
 class RNA_DatasetBaselineSplitssbppV0(Dataset):
     def __init__(
@@ -1687,7 +1765,7 @@ class RNA_DatasetBaselineSplitssbppV4(Dataset):
         
         
 
-from copy import deepcopy        
+     
 class RNA_DatasetBaselineSplitssbppV5(Dataset):
     def __init__(
         self,
@@ -1864,13 +1942,13 @@ class RNA_DatasetBaselineFM(Dataset):
         sn = torch.FloatTensor([self.sn_2A3[idx], self.sn_DMS[idx]])
 
         return {
-            "seq": torch.from_numpy(seq_holder),
+            "seq": torch.from_numpy(seq_holder).long(),
             "mask": mask,
             "ss_adj": ss_adj,
             "bb_matrix_full_prob": bpp,
         }, {"react": react, "react_err": react_err, "sn": sn, "mask": mask}
 
-# %% ../nbs/00_dataset.ipynb 10
+# %% ../nbs/00_dataset.ipynb 8
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
@@ -2256,3 +2334,5 @@ class RNA_Dataset_TestBppSSFullV4(Dataset):
             "bb_matrix_full_prob": bb_matrix_full_prob,
             "bb_matrix_full_prob_extra": bpp_extra,
         }, {"ids": ids}
+        
+

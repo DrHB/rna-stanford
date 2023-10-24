@@ -2836,7 +2836,6 @@ class CombinationTransformerEncoderV1(nn.Module):
         x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
         
-        
         x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
         
