@@ -13,7 +13,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'EncoderResidualCombBlock', 'RNA_ModelV16', 'EncoderResidualCombBlockV1', 'RNA_ModelV17', 'FeedForwardV5',
            'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM', 'RNA_ModelV20', 'ExtractorFM',
            'RNA_ModelV21FM', 'RNA_ModelV22FM', 'RNA_ModelV23', 'Combination', 'CombinationTransformerEncoder',
-           'RNA_ModelV24', 'CombinationTransformerEncoderV1', 'RNA_ModelV25', 'CombinationV2',
+           'RNA_ModelV24', 'CombinationTransformerEncoderV1', 'RNA_ModelV25', 'GRUGating',
            'CombinationTransformerEncoderV2', 'RNA_ModelV26']
 
 # %% ../nbs/01_models.ipynb 1
@@ -2720,11 +2720,6 @@ class CombinationTransformerEncoder(nn.Module):
         x = self.transformer_encoder(x, key_padding_mask=~mask)
         x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
         return x
-    
-    
-
-    
-    
 
 
 class RNA_ModelV24(nn.Module):
@@ -2735,7 +2730,7 @@ class RNA_ModelV24(nn.Module):
         head_size=32,
         drop_pat_dropout=0.2,
         dropout=0.2,
-        bpp_transfomer_depth = 8
+        bpp_transfomer_depth=8,
     ):
         super().__init__()
 
@@ -2756,11 +2751,16 @@ class RNA_ModelV24(nn.Module):
 
         self.bb_comb_blocks = nn.ModuleList(
             [
-                CombinationTransformerEncoder(dim, head_size=head_size, dropout=dropout, drop_path = drop_pat_dropout * (i / (bpp_transfomer_depth - 1)))
+                CombinationTransformerEncoder(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
                 for i in range(bpp_transfomer_depth)
             ]
         )
-        
+
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
 
     def forward(self, x0):
@@ -2785,9 +2785,7 @@ class RNA_ModelV24(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
-    
+
 
 class CombinationTransformerEncoderV1(nn.Module):
     def __init__(
@@ -2815,7 +2813,7 @@ class CombinationTransformerEncoderV1(nn.Module):
             init_values=1,
             drop=dropout,
         )
-        
+
         self.transformer_encoder_ss = Block_conv(
             dim=dim,
             num_heads=dim // head_size,
@@ -2824,7 +2822,7 @@ class CombinationTransformerEncoderV1(nn.Module):
             init_values=1,
             drop=dropout,
         )
-        
+
         self.bpp_combination = Combination(dim)
         self.bpp_extra_combination = Combination(dim)
         self.ss_combination = Combination(dim)
@@ -2833,17 +2831,16 @@ class CombinationTransformerEncoderV1(nn.Module):
         res = x
         x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
         x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
-        
+
         x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
-        
+
         x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
-        
-        return x + res
-    
 
-    
+        return x + res
+
+
 class RNA_ModelV25(nn.Module):
     def __init__(
         self,
@@ -2852,7 +2849,7 @@ class RNA_ModelV25(nn.Module):
         head_size=32,
         drop_pat_dropout=0.2,
         dropout=0.2,
-        bpp_transfomer_depth = 4
+        bpp_transfomer_depth=4,
     ):
         super().__init__()
 
@@ -2873,11 +2870,16 @@ class RNA_ModelV25(nn.Module):
 
         self.bb_comb_blocks = nn.ModuleList(
             [
-                CombinationTransformerEncoderV1(dim, head_size=head_size, dropout=dropout, drop_path = drop_pat_dropout * (i / (bpp_transfomer_depth - 1)))
+                CombinationTransformerEncoderV1(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
                 for i in range(bpp_transfomer_depth)
             ]
         )
-        
+
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
 
     def forward(self, x0):
@@ -2887,15 +2889,14 @@ class RNA_ModelV25(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
 
-
         bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
         bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
-        
+
         x = self.extractor(x, src_key_padding_mask=~mask)
 
         for i, blk in enumerate(self.bb_comb_blocks):
-            x = blk(x ,bpp, bpp_extra, ss, mask)
+            x = blk(x, bpp, bpp_extra, ss, mask)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
@@ -2903,28 +2904,23 @@ class RNA_ModelV25(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-class CombinationV2(nn.Sequential):
-    def __init__(self, ch, dropout=0.2):
-        super().__init__(
-            Conv1D(ch, ch, 7, padding=3),
-            nn.LayerNorm(ch),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            Conv1D(ch, ch, 7, padding=3),
-            nn.LayerNorm(ch),
-            nn.ReLU(),
-            nn.Dropout(dropout),
+
+
+class GRUGating(nn.Module):
+    def __init__(self, dim, scale_residual=False, **kwargs):
+        super().__init__()
+        self.gru = nn.GRUCell(dim, dim)
+        self.residual_scale = nn.Parameter(torch.ones(dim)) if scale_residual else None
+
+    def forward(self, x, residual):
+        if exists(self.residual_scale):
+            residual = residual * self.residual_scale
+
+        gated_output = self.gru(
+            rearrange(x, "b n d -> (b n) d"), rearrange(residual, "b n d -> (b n) d")
         )
-        self.relu = nn.ReLU()
 
-    def forward(self, x, bpp, src_key_padding_mask=None):
-        for i in [0, 4]:
-            self[i].src_key_padding_mask = src_key_padding_mask
-        h = torch.bmm(x.permute(0, 2, 1), bpp).permute(0, 2, 1)
-        h = super().forward(h)
-        return self.relu(x + h)
-
+        return gated_output.reshape_as(x)
 
 
 class CombinationTransformerEncoderV2(nn.Module):
@@ -2953,7 +2949,7 @@ class CombinationTransformerEncoderV2(nn.Module):
             init_values=1,
             drop=dropout,
         )
-        
+
         self.transformer_encoder_ss = Block_conv(
             dim=dim,
             num_heads=dim // head_size,
@@ -2962,25 +2958,26 @@ class CombinationTransformerEncoderV2(nn.Module):
             init_values=1,
             drop=dropout,
         )
-        
-        self.bpp_combination = CombinationV2(dim)
-        self.bpp_extra_combination = CombinationV2(dim)
-        self.ss_combination = CombinationV2(dim)
+
+        self.bpp_combination = Combination(dim)
+        self.bpp_extra_combination = Combination(dim)
+        self.ss_combination = Combination(dim)
+        self.res_out = GRUGating(dim)
 
     def forward(self, x, bpp, bpp_extra, ss, mask):
         res = x
         x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
         x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
-        
+
         x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
-        
+
         x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
-        
-        return x + res
 
-    
+        return self.res_out(x, res)
+
+
 class RNA_ModelV26(nn.Module):
     def __init__(
         self,
@@ -2989,7 +2986,7 @@ class RNA_ModelV26(nn.Module):
         head_size=32,
         drop_pat_dropout=0.2,
         dropout=0.2,
-        bpp_transfomer_depth = 4
+        bpp_transfomer_depth=4,
     ):
         super().__init__()
 
@@ -3010,11 +3007,16 @@ class RNA_ModelV26(nn.Module):
 
         self.bb_comb_blocks = nn.ModuleList(
             [
-                CombinationTransformerEncoderV2(dim, head_size=head_size, dropout=dropout, drop_path = drop_pat_dropout * (i / (bpp_transfomer_depth - 1)))
+                CombinationTransformerEncoderV2(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
                 for i in range(bpp_transfomer_depth)
             ]
         )
-        
+
         self.proj_out = nn.Sequential(nn.Linear(dim, 2))
 
     def forward(self, x0):
@@ -3024,15 +3026,14 @@ class RNA_ModelV26(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
 
-
         bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
         bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
-        
+
         x = self.extractor(x, src_key_padding_mask=~mask)
 
         for i, blk in enumerate(self.bb_comb_blocks):
-            x = blk(x ,bpp, bpp_extra, ss, mask)
+            x = blk(x, bpp, bpp_extra, ss, mask)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)

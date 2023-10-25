@@ -627,6 +627,7 @@ class EffBlockV2(nn.Sequential):
         se_reduction=None,
         se_type="simple",
         inner_dim_calculation="out",
+        dropout=0.2,
     ):
         self.in_ch = in_ch
         self.out_ch = self.in_ch if out_ch is None else out_ch
@@ -654,6 +655,7 @@ class EffBlockV2(nn.Sequential):
             ),
             nn.LayerNorm(self.inner_dim),
             activation(),
+            nn.Dropout(dropout),
             Conv1D(
                 in_channels=self.inner_dim,
                 out_channels=self.inner_dim,
@@ -664,6 +666,7 @@ class EffBlockV2(nn.Sequential):
             ),
             nn.LayerNorm(self.inner_dim),
             activation(),
+            nn.Dropout(dropout),
             Conv1D(
                 in_channels=self.inner_dim,
                 out_channels=self.in_ch,
@@ -673,6 +676,7 @@ class EffBlockV2(nn.Sequential):
             ),
             nn.LayerNorm(self.in_ch),
             activation(),
+            nn.Dropout(dropout)
         )
 
         self.src_key_padding_mask = None
@@ -684,7 +688,7 @@ class EffBlockV2(nn.Sequential):
 
 
 class LocalBlockV2(nn.Sequential):
-    def __init__(self, in_ch, ks, activation, out_ch=None):
+    def __init__(self, in_ch, ks, activation, dropout = 0.2, out_ch=None):
         self.in_ch = in_ch
         self.out_ch = self.in_ch if out_ch is None else out_ch
         self.ks = ks
@@ -699,6 +703,7 @@ class LocalBlockV2(nn.Sequential):
             ),
             nn.LayerNorm(self.out_ch),
             activation(),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x, src_key_padding_mask=None):
@@ -716,6 +721,7 @@ class ConvolutionConcatBlockV2(nn.Module):
         filter_per_group=1,
         activation=nn.GELU,
         out_ch=None,
+        dropout = 0.2,
     ):
         super().__init__()
         self.effblock = EffBlockV2(
@@ -725,10 +731,11 @@ class ConvolutionConcatBlockV2(nn.Module):
             filter_per_group=filter_per_group,
             activation=activation,
             out_ch=out_ch,
+            dropout=dropout,
         )
 
         self.localblock = LocalBlockV2(
-            in_ch=in_ch * 2, ks=ks, activation=activation, out_ch=out_ch
+            in_ch=in_ch * 2, ks=ks, activation=activation, out_ch=out_ch, dropout=dropout,
         )
 
     def forward(self, x, src_key_padding_mask=None):
@@ -739,6 +746,7 @@ class ConvolutionConcatBlockV2(nn.Module):
         return x
 
 
+
 class CustomConvdV2(nn.Module):
     def __init__(
         self,
@@ -747,6 +755,7 @@ class CustomConvdV2(nn.Module):
         ks: int = 7,
         resize_factor: int = 4,
         activation: Type[nn.Module] = nn.SiLU,
+        dropout = 0.2, 
     ):
         super().__init__()
 
@@ -762,6 +771,7 @@ class CustomConvdV2(nn.Module):
                 ks=ks,
                 resize_factor=resize_factor,
                 activation=activation,
+                dropout = dropout,
             )
             self.blocks.append(block)
 
@@ -776,10 +786,11 @@ class RnaModelConvV2(nn.Module):
     def __init__(
         self,
         dim=192,
-        block_sizes=[256, 128, 128, 64, 64, 64, 64],
+        block_sizes=[256, 128, 128, 64, 64, 64, 64, 32, 32],
         resize_factor=4,
         ks=7,
-        activation=nn.GELU,
+        activation=nn.ReLU,
+        dropout = 0.2,
     ):
         super().__init__()
         self.extractor = Extractor(dim)
@@ -789,6 +800,7 @@ class RnaModelConvV2(nn.Module):
             resize_factor=resize_factor,
             ks=ks,
             activation=activation,
+            dropout = dropout,
         )
         self.proj_out = nn.Sequential(nn.Linear(block_sizes[-1], 2))
 
