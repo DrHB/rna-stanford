@@ -14,7 +14,9 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'RNA_ModelV18FM', 'EncoderResidualCombBlockV2', 'RNA_ModelV19FM', 'RNA_ModelV20', 'ExtractorFM',
            'RNA_ModelV21FM', 'RNA_ModelV22FM', 'RNA_ModelV23', 'Combination', 'CombinationTransformerEncoder',
            'RNA_ModelV24', 'CombinationTransformerEncoderV1', 'RNA_ModelV25', 'GRUGating',
-           'CombinationTransformerEncoderV2', 'RNA_ModelV26']
+           'CombinationTransformerEncoderV2', 'RNA_ModelV26', 'MlpConv', 'Conv1DV3', 'ExtractorV3', 'RNA_ModelV27',
+           'Sequential', 'GLU', 'ReluSquared', 'init_zero_', 'FeedForwardV3', 'CombinationTransformerEncoderV3',
+           'RNA_ModelV28']
 
 # %% ../nbs/01_models.ipynb 1
 import sys
@@ -36,6 +38,8 @@ from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 from torch_geometric.nn import GATConv, GCNConv
 import fm
+from typing import List, Callable, Optional
+
 
 # %% ../nbs/01_models.ipynb 2
 def exists(val):
@@ -3041,3 +3045,357 @@ class RNA_ModelV26(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+
+
+class MlpConv(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        hidden_features=None,
+        out_features=None,
+        activation=F.gelu,
+        bias1=True,
+        bias2=True,
+        return_residual=False,
+        device=None,
+        dtype=None,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        out_features = out_features if out_features is not None else in_features
+        hidden_features = (
+            hidden_features if hidden_features is not None else in_features
+        )  # * 4
+        self.return_residual = return_residual
+        self.fc1 = nn.Conv1d(
+            in_features, hidden_features, 3, padding=1, bias=bias1, **factory_kwargs
+        )
+        self.activation = activation
+        self.fc2 = nn.Conv1d(
+            hidden_features, out_features, 3, padding=1, bias=bias2, **factory_kwargs
+        )
+        self.src_key_padding_mask = None
+
+    def forward(self, x0):
+        x = x0.permute(0, 2, 1)
+        if self.src_key_padding_mask is not None:
+            src_key_padding_mask = (
+                self.src_key_padding_mask.unsqueeze(1).expand(-1, x.shape[1], -1).bool()
+            )
+            x = torch.where(src_key_padding_mask, torch.zeros_like(x), x)
+        y = self.fc1(x)
+        y = self.activation(y)
+        if self.src_key_padding_mask is not None:
+            # src_key_padding_mask = self.src_key_padding_mask.unsqueeze(1).expand(-1,x.shape[1],-1).bool()
+            y = torch.where(src_key_padding_mask, torch.zeros_like(y), y)
+        y = self.fc2(y)
+        y = y.permute(0, 2, 1)
+        return y if not self.return_residual else (y, x0)
+
+
+class Conv1DV3(nn.Conv1d):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x, key_padding_mask=None):
+        if key_padding_mask is not None:
+            x = torch.where(
+                key_padding_mask.unsqueeze(-1).expand(-1, -1, x.shape[-1]).bool(),
+                torch.zeros_like(x),
+                x,
+            )
+        return super().forward(x.permute(0, 2, 1)).permute(0, 2, 1)
+
+
+class ExtractorV3(nn.Module):
+    def __init__(self, in_features, in_n=4):
+        super().__init__()
+        self.emb = nn.Embedding(in_n, in_features // 4)
+        self.conv = Conv1DV3(in_features // 4, in_features, 7, padding=3)
+        self.res = MlpConv(
+            in_features
+        )  # nn.Sequential(MlpConv(in_features),MlpConv(in_features))
+
+    def forward(self, x, src_key_padding_mask=None):
+        # x = self.emb(x)
+        x = self.conv(self.emb(x), src_key_padding_mask)
+        self.res.src_key_padding_mask = src_key_padding_mask
+        x = x + self.res(x)
+        return x
+
+
+class RNA_ModelV27(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=4,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=4,
+    ):
+        super().__init__()
+
+        self.extractor = ExtractorV3(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV2(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, bpp_extra, ss, mask)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+    
+def Sequential(*modules):
+    return nn.Sequential(*filter(exists, modules))
+
+
+class GLU(nn.Module):
+    def __init__(
+        self,
+        dim_in,
+        dim_out,
+        activation: Callable,
+        mult_bias = False
+    ):
+        super().__init__()
+        self.act = activation
+        self.proj = nn.Linear(dim_in, dim_out * 2)
+        self.mult_bias = nn.Parameter(torch.ones(dim_out)) if mult_bias else 1.
+
+    def forward(self, x):
+        x, gate = self.proj(x).chunk(2, dim = -1)
+        return x * self.act(gate) * self.mult_bias
+
+
+class ReluSquared(nn.Module):
+    def forward(self, x):
+        return F.relu(x) ** 2
+    
+def init_zero_(layer):
+    nn.init.constant_(layer.weight, 0.)
+    if exists(layer.bias):
+        nn.init.constant_(layer.bias, 0.)
+
+
+
+class FeedForwardV3(nn.Module):
+    def __init__(
+        self,
+        dim,
+        dim_out = None,
+        mult = 4,
+        glu = False,
+        glu_mult_bias = False,
+        swish = False,
+        relu_squared = False,
+        post_act_ln = False,
+        dropout = 0.,
+        no_bias = False,
+        zero_init_output = False
+    ):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        dim_out = default(dim_out, dim)
+
+        if relu_squared:
+            activation = ReluSquared()
+        elif swish:
+            activation = nn.SiLU()
+        else:
+            activation = nn.GELU()
+
+        if glu:
+            project_in = GLU(dim, inner_dim, activation, mult_bias = glu_mult_bias)
+        else:
+            project_in = nn.Sequential(
+                nn.Linear(dim, inner_dim, bias = not no_bias),
+                activation
+            )
+
+        self.ff = Sequential(
+            project_in,
+            nn.LayerNorm(inner_dim) if post_act_ln else None,
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, dim_out, bias = not no_bias)
+        )
+
+        # init last linear layer to 0
+        if zero_init_output:
+            init_zero_(self.ff[-1])
+
+    def forward(self, x):
+        return self.ff(x)
+    
+class CombinationTransformerEncoderV3(nn.Module):
+    def __init__(
+        self,
+        dim,
+        head_size,
+        drop_path,
+        dropout,
+    ):
+        super().__init__()
+        self.transformer_encoder_bpp = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+
+        self.transformer_encoder_bpp_extra = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+
+        self.transformer_encoder_ss = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+
+        self.bpp_combination = Combination(dim)
+        self.bpp_extra_combination = Combination(dim)
+        self.ss_combination = Combination(dim)
+        self.out = FeedForwardV3(dim * 4, dim_out=dim, mult = 1, glu=True, dropout=dropout)
+
+    def get_bpp(self, x, bpp, mask):
+        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
+        x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
+        return x
+    
+    def get_bpp_extra(self, x, bpp_extra, mask):
+        x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
+        x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
+        return x
+    
+    def get_ss(self, x, ss, mask):
+        x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
+        x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
+        return x
+    
+    def forward(self, x, bpp, bpp_extra, ss, mask):
+        res = x
+        x_bpp = self.get_bpp(x, bpp, mask)
+        x_bpp_extra = self.get_bpp_extra(x_bpp, bpp_extra, mask)
+        x_ss = self.get_ss(x_bpp_extra, ss, mask)
+        out = torch.cat([x_bpp, x_bpp_extra, x_ss, res], dim=-1)
+        return self.out(out)
+    
+class RNA_ModelV28(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=4,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=4,
+    ):
+        super().__init__()
+
+        self.extractor = ExtractorV3(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV3(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, bpp_extra, ss, mask)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+
