@@ -8,6 +8,8 @@ __all__ = ['good_luck', 'conv_block', 'up_conv', 'U_Net', 'UnetWrapper2D', 'gene
            'RnaModelConvV2']
 
 # %% ../nbs/01_modelsconv.ipynb 1
+import sys
+sys.path.append('/opt/slh/rna/')
 import torch
 from torch import nn, einsum
 from einops import rearrange, repeat
@@ -24,7 +26,7 @@ import numpy as np
 from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 from torch_geometric.nn import GATConv, GCNConv
-
+from .models import CombinationTransformerEncoderV1
 
 # %% ../nbs/01_modelsconv.ipynb 3
 def good_luck():
@@ -600,6 +602,7 @@ class RnaModelConvV1(nn.Module):
             block_sizes=block_sizes,
         )
         self.proj_out = nn.Sequential(nn.Linear(block_sizes[-1], 2))
+        
 
     def forward(self, x0):
         mask = x0["mask"]
@@ -786,13 +789,16 @@ class RnaModelConvV2(nn.Module):
     def __init__(
         self,
         dim=192,
-        block_sizes=[256, 128, 128, 64, 64, 64, 64, 32, 32],
         resize_factor=4,
         ks=7,
-        activation=nn.ReLU,
-        dropout = 0.2,
+        activation=nn.SiLU,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=3,
     ):
         super().__init__()
+        block_sizes = [dim, dim, dim, dim//2, dim//2, dim//2]
         self.extractor = Extractor(dim)
         self.cnn_model = CustomConvdV2(
             dim=dim,
@@ -800,9 +806,22 @@ class RnaModelConvV2(nn.Module):
             resize_factor=resize_factor,
             ks=ks,
             activation=activation,
-            dropout = dropout,
+            dropout = 0.0,
         )
-        self.proj_out = nn.Sequential(nn.Linear(block_sizes[-1], 2))
+        
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV1(
+                    dim//2,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Linear( dim//2, 2)
 
     def forward(self, x0):
         mask = x0["mask"]
@@ -811,8 +830,16 @@ class RnaModelConvV2(nn.Module):
         mask = mask[:, :Lmax]
         x = x0["seq"][:, :Lmax]
 
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+
         x = self.extractor(x, src_key_padding_mask=~mask)
         x = self.cnn_model(x, src_key_padding_mask=~mask)
+        
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, bpp_extra, ss, mask)
+            
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x

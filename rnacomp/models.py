@@ -76,7 +76,7 @@ class GatedResidual(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.proj = nn.Sequential(
-            nn.Linear(dim * 4, 1, bias = False),
+            nn.Linear(dim * 3, 1, bias = False),
             nn.Sigmoid()
         )
 
@@ -3309,30 +3309,28 @@ class CombinationTransformerEncoderV3(nn.Module):
         self.bpp_combination = Combination(dim)
         self.bpp_extra_combination = Combination(dim)
         self.ss_combination = Combination(dim)
-        self.out = FeedForwardV3(dim * 4, dim_out=dim, mult = 1, glu=True, dropout=dropout)
 
     def get_bpp(self, x, bpp, mask):
-        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
         x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
+        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
         return x
     
     def get_bpp_extra(self, x, bpp_extra, mask):
-        x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
+        x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         return x
     
     def get_ss(self, x, ss, mask):
-        x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
+        x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         return x
     
     def forward(self, x, bpp, bpp_extra, ss, mask):
         res = x
         x_bpp = self.get_bpp(x, bpp, mask)
-        x_bpp_extra = self.get_bpp_extra(x_bpp, bpp_extra, mask)
-        x_ss = self.get_ss(x_bpp_extra, ss, mask)
-        out = torch.cat([x_bpp, x_bpp_extra, x_ss, res], dim=-1)
-        return self.out(out)
+        x_bpp = self.get_bpp_extra(x_bpp, bpp_extra, mask)
+        x_bpp = self.get_ss(x_bpp, ss, mask)
+        return x_bpp + res
     
 class RNA_ModelV28(nn.Module):
     def __init__(
@@ -3346,7 +3344,7 @@ class RNA_ModelV28(nn.Module):
     ):
         super().__init__()
 
-        self.extractor = ExtractorV3(dim)
+        self.extractor = Extractor(dim)
         self.blocks = nn.ModuleList(
             [
                 Block_conv(
