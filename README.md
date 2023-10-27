@@ -39,6 +39,7 @@
 | `exp_35`   | same as `exp_32`, but it replaces the standard `rnatormer` bpp with `rnaformverv1` , its working fine, i think i can reach same score |  sas `exp_32`  |       |
 | `exp_37`   | same as `exp_35`, but it replaces the standard `rnatormer` bpp with `rnaformverv1` removed `rnafm`, its working fine, i think i can reach same score, `RNA_DatasetBaselineSplitssbppV6`, `RNA_ModelV26`, in the model residul replaced with `GRUresidual` |  sas `exp_32`  |       |
 | `exp_38`   | The approach in `exp_38` . Notably, this experiment employs a strategic data augmentation method by introducing a 'flip' technique. In addition added `rnafm` to `extra_bpp` as augmentaion because its noisy, `"vienna_2"`, `"contrafold_2"`, and `"rnaformerv1"`, Dataset uses `RNA_DatasetBaselineSplitssbppV7Flip`.  Furthermore, `exp_38` , using `ExtractorV3`, that uses `MLP` instead of `res_block`. In the continued pursuit of architectural excellence, the model uses several blocks of the newly introduced `CombinationTransformerEncoderV2`, each endowed with `GRUGating`. Convergense a bit slow, maybe remove  noise in `rnafm`| TBD   |       |
+| `exp_39`   | In `exp_39`, the model architecture shifts to `RnaModelConvV2`, integrating 1D convolutions with `CombinationTransformerEncoderV1` blocks. The focus is to explore the effectiveness of 1D convolutions in the feature extraction phase. While the preliminary outcomes indicate an improvement, they still lag behind the best-performing models like `exp_32` |    |    |
 
 
 
