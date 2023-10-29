@@ -5,7 +5,7 @@ __all__ = ['good_luck', 'conv_block', 'up_conv', 'U_Net', 'UnetWrapper2D', 'gene
            'ScaledSinuEmbedding', 'CustomEmbedding', 'SeqToImage', 'Attn_pool', 'FeedForwardV5', 'RnaModelConvV0',
            'SELayer', 'Conv1D', 'ResBlock', 'Extractor', 'LocalBlock', 'EffBlock', 'MappingBlock', 'ResidualConcat',
            'LegNet', 'RnaModelConvV1', 'EffBlockV2', 'LocalBlockV2', 'ConvolutionConcatBlockV2', 'CustomConvdV2',
-           'RnaModelConvV2']
+           'RnaModelConvV2', 'ConvolutionConcatBlockV3', 'RnaModelConvV3']
 
 # %% ../nbs/01_modelsconv.ipynb 1
 import sys
@@ -32,7 +32,7 @@ from .models import CombinationTransformerEncoderV1
 def good_luck():
     return True
 
-# %% ../nbs/01_modelsconv.ipynb 4
+# %% ../nbs/01_modelsconv.ipynb 5
 class conv_block(nn.Module):
     def __init__(self, ch_in, ch_out):
         super(conv_block, self).__init__()
@@ -602,7 +602,6 @@ class RnaModelConvV1(nn.Module):
             block_sizes=block_sizes,
         )
         self.proj_out = nn.Sequential(nn.Linear(block_sizes[-1], 2))
-        
 
     def forward(self, x0):
         mask = x0["mask"]
@@ -679,7 +678,7 @@ class EffBlockV2(nn.Sequential):
             ),
             nn.LayerNorm(self.in_ch),
             activation(),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout),
         )
 
         self.src_key_padding_mask = None
@@ -691,7 +690,7 @@ class EffBlockV2(nn.Sequential):
 
 
 class LocalBlockV2(nn.Sequential):
-    def __init__(self, in_ch, ks, activation, dropout = 0.2, out_ch=None):
+    def __init__(self, in_ch, ks, activation, dropout=0.2, out_ch=None):
         self.in_ch = in_ch
         self.out_ch = self.in_ch if out_ch is None else out_ch
         self.ks = ks
@@ -724,7 +723,7 @@ class ConvolutionConcatBlockV2(nn.Module):
         filter_per_group=1,
         activation=nn.GELU,
         out_ch=None,
-        dropout = 0.2,
+        dropout=0.2,
     ):
         super().__init__()
         self.effblock = EffBlockV2(
@@ -738,7 +737,11 @@ class ConvolutionConcatBlockV2(nn.Module):
         )
 
         self.localblock = LocalBlockV2(
-            in_ch=in_ch * 2, ks=ks, activation=activation, out_ch=out_ch, dropout=dropout,
+            in_ch=in_ch * 2,
+            ks=ks,
+            activation=activation,
+            out_ch=out_ch,
+            dropout=dropout,
         )
 
     def forward(self, x, src_key_padding_mask=None):
@@ -749,7 +752,6 @@ class ConvolutionConcatBlockV2(nn.Module):
         return x
 
 
-
 class CustomConvdV2(nn.Module):
     def __init__(
         self,
@@ -758,7 +760,7 @@ class CustomConvdV2(nn.Module):
         ks: int = 7,
         resize_factor: int = 4,
         activation: Type[nn.Module] = nn.SiLU,
-        dropout = 0.2, 
+        dropout=0.2,
     ):
         super().__init__()
 
@@ -774,7 +776,7 @@ class CustomConvdV2(nn.Module):
                 ks=ks,
                 resize_factor=resize_factor,
                 activation=activation,
-                dropout = dropout,
+                dropout=dropout,
             )
             self.blocks.append(block)
 
@@ -798,7 +800,7 @@ class RnaModelConvV2(nn.Module):
         bpp_transfomer_depth=3,
     ):
         super().__init__()
-        block_sizes = [dim, dim, dim, dim//2, dim//2, dim//2]
+        block_sizes = [dim, dim, dim, dim, dim]
         self.extractor = Extractor(dim)
         self.cnn_model = CustomConvdV2(
             dim=dim,
@@ -806,13 +808,13 @@ class RnaModelConvV2(nn.Module):
             resize_factor=resize_factor,
             ks=ks,
             activation=activation,
-            dropout = 0.0,
+            dropout=0.0,
         )
-        
+
         self.bb_comb_blocks = nn.ModuleList(
             [
                 CombinationTransformerEncoderV1(
-                    dim//2,
+                    dim // 2,
                     head_size=head_size,
                     dropout=dropout,
                     drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
@@ -821,7 +823,7 @@ class RnaModelConvV2(nn.Module):
             ]
         )
 
-        self.proj_out = nn.Linear( dim//2, 2)
+        self.proj_out = nn.Linear(dim // 2, 2)
 
     def forward(self, x0):
         mask = x0["mask"]
@@ -836,10 +838,105 @@ class RnaModelConvV2(nn.Module):
 
         x = self.extractor(x, src_key_padding_mask=~mask)
         x = self.cnn_model(x, src_key_padding_mask=~mask)
-        
+
         for i, blk in enumerate(self.bb_comb_blocks):
             x = blk(x, bpp, bpp_extra, ss, mask)
-            
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+
+
+
+class ConvolutionConcatBlockV3(nn.Module):
+    def __init__(
+        self,
+        in_ch=256,
+        ks=7,
+        resize_factor=4,
+        filter_per_group=1,
+        activation=nn.GELU,
+        out_ch=None,
+        dropout=0.2,
+        head_size=32,
+        dropout_trasnfomer = 0.2,
+        drop_path = 0.2
+    ):
+        super().__init__()
+        self.effblock = EffBlock(
+                        in_ch=in_ch,
+                        out_ch=out_ch,
+                        ks=ks,
+                        resize_factor=4,
+                        activation=activation,
+                        filter_per_group=filter_per_group,
+                        se_type="simple",
+                        inner_dim_calculation="out",
+                    )
+        self.t_block = CombinationTransformerEncoderV1(
+                    in_ch,
+                    head_size=head_size,
+                    dropout=dropout_trasnfomer,
+                    drop_path=drop_path,
+                )
+
+    
+
+    def forward(self,x, bpp, bpp_extra, ss, mask):
+        res = x
+        x = self.effblock(x.permute(0, 2, 1)).permute(0, 2, 1)
+        x = self.t_block(x, bpp, bpp_extra, ss, mask)
+        return x + res
+
+
+class RnaModelConvV3(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        resize_factor=4,
+        ks=7,
+        activation=nn.SiLU,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=3,
+    ):
+        super().__init__()
+        block_sizes = [dim, dim, dim, dim, dim]
+        self.extractor = Extractor(dim)
+        
+        self.blocks = nn.ModuleList()
+        for ind, (prev_sz, sz) in enumerate(zip(block_sizes[:-1], block_sizes[1:])):
+            block = ConvolutionConcatBlockV3(
+                in_ch=prev_sz,
+                out_ch=sz,
+                ks=ks,
+                resize_factor=resize_factor,
+                activation=activation,
+                dropout=dropout,
+                head_size=32,
+                dropout_trasnfomer = 0.2,
+                drop_path = drop_pat_dropout * (ind / (len(block_sizes) - 1)),
+            )
+            self.blocks.append(block)
+
+        self.proj_out = nn.Linear(block_sizes[-1], 2)
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+        bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+        bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+        ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, bpp, bpp_extra, ss, mask)
+
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x

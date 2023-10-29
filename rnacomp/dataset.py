@@ -1878,7 +1878,7 @@ class RNA_DatasetBaselineSplitssbppV6(Dataset):
         mask_only=False,
         sn_train=True,
         extra_bpp_path=Path("../eda/bpp"),
-        extra_bpp=["vienna_2", "contrafold_2", "rnaformerv1"],
+        extra_bpp=["vienna_2", "contrafold_2", "rnaformer"],
         **kwargs,
     ):
         """
@@ -2139,15 +2139,12 @@ class RNA_DatasetBaselineSplitssbppV7Flip(Dataset):
         ss_adj = torch.tensor(dot_to_adjacencyv0(self.ss[idx], L)).int()
         bpp = generate_base_pair_matrixv1(self.bpp[idx], L).float()
         
-        e_bpp = self.extra_bpp
-        if self.mode == "train" and random.random() > 0.5:
-            e_bpp = e_bpp + ["rnafm"]
-               
+
         bpp_extra = [
             extra_bpp_from_numpy(
                 self.extra_bpp_path / f"{i}/{self.bpp[idx].stem}.npy", L, seq_len=L
             )
-            for i in e_bpp
+            for i in self.extra_bpp
         ]
         bpp_extra = torch.stack([*bpp_extra], dim=0).mean(0).float()
 
