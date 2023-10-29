@@ -30,7 +30,6 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import math
 from timm.models.layers import drop_path, to_2tuple, trunc_normal_
-from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
 from torch_geometric.data import Data, Batch
 import numpy as np
