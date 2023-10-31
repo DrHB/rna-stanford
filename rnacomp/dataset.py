@@ -13,7 +13,7 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetBaselineSplitssbppV7Flip', 'RNA_DatasetBaselineSplitssbppV6SAVED', 'RNA_Dataset_Test',
            'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0',
            'RNA_Dataset_TestBppSSFullV1', 'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3',
-           'RNA_Dataset_TestBppSSFullV4']
+           'RNA_Dataset_TestBppSSFullV4', 'RNA_Dataset_TestSavedV0']
 
 # %% ../nbs/00_dataset.ipynb 1
 import pandas as pd
@@ -2668,5 +2668,60 @@ class RNA_Dataset_TestBppSSFullV4(Dataset):
             "bb_matrix_full_prob": bb_matrix_full_prob,
             "bb_matrix_full_prob_extra": bpp_extra,
         }, {"ids": ids}
+        
+        
+        
+
+class RNA_Dataset_TestSavedV0(Dataset):
+    def __init__(
+        self,
+        df,
+        mask_only=False,
+        extra_bpp_path=Path("../eda/bpp/comb"),
+        extra_bpp=["vienna_2", "contrafold_2", "rnaformer",],
+        **kwargs,
+    ):
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        df["L"] = df.sequence.apply(len)
+        self.Lmax = df["L"].max()
+        self.df = df
+        self.mask_only = mask_only
+        self.extra_bpp = extra_bpp
+        self.extra_bpp_path = extra_bpp_path
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        id_min, id_max, seq = self.df.loc[idx, ["id_min", "id_max", "sequence"]]
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        L = len(seq)
+        mask[:L] = True
+        if self.mask_only:
+            return {"mask": mask}, {}
+        ids = np.arange(id_min, id_max + 1)
+        seq = [self.seq_map[s] for s in seq]
+        seq = np.array(seq)
+        seq = np.pad(seq, (0, self.Lmax - L))
+        ids = np.pad(ids, (0, self.Lmax - L), constant_values=-1)
+        data = np.load(self.extra_bpp_path/f'{self.df["bpp"][idx].stem}.npz')
+        
+        ss =  torch.from_numpy(data['ss_vienna'].astype(np.float32))
+        bpp = torch.from_numpy(data['bpp_org'].astype(np.float32))
+        bpp_extra = torch.stack([torch.from_numpy(data[i].astype(np.float32)) for i in self.extra_bpp], dim=0).mean(0)
+        bpp = F.pad(bpp, (0, self.Lmax - L, 0, self.Lmax - L))
+        bpp_extra = F.pad(bpp_extra, (0, self.Lmax - L, 0, self.Lmax - L))
+        ss = F.pad(ss, (0, self.Lmax - L, 0, self.Lmax - L))
+
+
+
+        return deepcopy({
+            "seq": torch.from_numpy(seq),
+            "mask": mask,
+            "adj_matrix": bpp,
+            "ss_adj": ss,
+            "bb_matrix_full_prob": bpp,
+            "bb_matrix_full_prob_extra": bpp_extra,
+        }), deepcopy({"ids": ids})
         
 
