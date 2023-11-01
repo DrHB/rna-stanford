@@ -19,14 +19,15 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import math
 from timm.models.layers import drop_path, to_2tuple, trunc_normal_
-from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
 from torch_geometric.data import Data, Batch
 import numpy as np
 from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 from torch_geometric.nn import GATConv, GCNConv
-from .models import CombinationTransformerEncoderV1
+from .models import CombinationTransformerEncoderV1, Block_conv
+from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
+
 
 # %% ../nbs/01_modelsconv.ipynb 3
 def good_luck():
@@ -847,7 +848,6 @@ class RnaModelConvV2(nn.Module):
         return x
 
 
-
 class ConvolutionConcatBlockV3(nn.Module):
     def __init__(
         self,
@@ -859,35 +859,103 @@ class ConvolutionConcatBlockV3(nn.Module):
         out_ch=None,
         dropout=0.2,
         head_size=32,
-        dropout_trasnfomer = 0.2,
-        drop_path = 0.2
+        dropout_trasnfomer=0.2,
+        drop_path=0.2,
     ):
         super().__init__()
         self.effblock = EffBlock(
-                        in_ch=in_ch,
-                        out_ch=out_ch,
-                        ks=ks,
-                        resize_factor=4,
-                        activation=activation,
-                        filter_per_group=filter_per_group,
-                        se_type="simple",
-                        inner_dim_calculation="out",
-                    )
+            in_ch=in_ch,
+            out_ch=out_ch,
+            ks=ks,
+            resize_factor=4,
+            activation=activation,
+            filter_per_group=filter_per_group,
+            se_type="simple",
+            inner_dim_calculation="out",
+        )
         self.t_block = CombinationTransformerEncoderV1(
-                    in_ch,
-                    head_size=head_size,
-                    dropout=dropout_trasnfomer,
-                    drop_path=drop_path,
-                )
+            in_ch,
+            head_size=head_size,
+            dropout=dropout_trasnfomer,
+            drop_path=drop_path,
+        )
 
-    
-
-    def forward(self,x, bpp, bpp_extra, ss, mask):
+    def forward(self, x, bpp, bpp_extra, ss, mask):
         res = x
         x = self.effblock(x.permute(0, 2, 1)).permute(0, 2, 1)
         x = self.t_block(x, bpp, bpp_extra, ss, mask)
         return x + res
 
+
+# class RnaModelConvV3(nn.Module):
+#     def __init__(
+#         self,
+#         dim=192,
+#         resize_factor=4,
+#         ks=7,
+#         activation=nn.SiLU,
+#         head_size=32,
+#         drop_pat_dropout=0.2,
+#         dropout=0.2,
+#         transformer_depth=6,
+#     ):
+#         super().__init__()
+#         block_sizes = [dim, dim, dim, dim, dim]
+#         self.extractor = Extractor(dim)
+
+#         self.blocks = nn.ModuleList()
+#         for ind, (prev_sz, sz) in enumerate(zip(block_sizes[:-1], block_sizes[1:])):
+#             block = ConvolutionConcatBlockV3(
+#                 in_ch=prev_sz,
+#                 out_ch=sz,
+#                 ks=ks,
+#                 resize_factor=resize_factor,
+#                 activation=activation,
+#                 dropout=dropout,
+#                 head_size=32,
+#                 dropout_trasnfomer=0.2,
+#                 drop_path=drop_pat_dropout * (ind / (len(block_sizes) - 1)),
+#             )
+#             self.blocks.append(block)
+
+#         self.enc = ContinuousTransformerWrapper(
+#             dim_in=dim * 2,
+#             dim_out=2,
+#             max_seq_len=512,
+#             attn_layers=Encoder(
+#                 dim=dim,
+#                 depth=transformer_depth,
+#                 attn_flash=True,
+#                 rotary_pos_emb=True,
+#                 attn_gate_values=True,
+#                 attn_head_scale=True,
+#                 ff_post_act_ln=True,
+#                 attn_qk_norm=True,
+#                 attn_qk_norm_dim_scale=True,
+#                 layer_dropout=drop_pat_dropout,  # stochastic depth - dropout entire layer
+#                 attn_dropout=dropout,  # dropout post-attention
+#             ),
+#         )
+
+#     def forward(self, x0):
+#         mask = x0["mask"]
+#         L0 = mask.shape[1]
+#         Lmax = mask.sum(-1).max()
+#         mask = mask[:, :Lmax]
+#         x = x0["seq"][:, :Lmax]
+
+#         bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
+#         bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+#         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
+
+#         x = self.extractor(x, src_key_padding_mask=~mask)
+#         res = x
+#         for i, blk in enumerate(self.blocks):
+#             x = blk(x, bpp, bpp_extra, ss, mask)
+#         x = torch.concat([x, res], -1)
+#         x = self.enc(x, mask=mask)
+#         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+#         return x
 
 class RnaModelConvV3(nn.Module):
     def __init__(
@@ -899,12 +967,12 @@ class RnaModelConvV3(nn.Module):
         head_size=32,
         drop_pat_dropout=0.2,
         dropout=0.2,
-        bpp_transfomer_depth=3,
+        transformer_depth=6,
     ):
         super().__init__()
         block_sizes = [dim, dim, dim, dim, dim]
         self.extractor = Extractor(dim)
-        
+
         self.blocks = nn.ModuleList()
         for ind, (prev_sz, sz) in enumerate(zip(block_sizes[:-1], block_sizes[1:])):
             block = ConvolutionConcatBlockV3(
@@ -915,12 +983,29 @@ class RnaModelConvV3(nn.Module):
                 activation=activation,
                 dropout=dropout,
                 head_size=32,
-                dropout_trasnfomer = 0.2,
-                drop_path = drop_pat_dropout * (ind / (len(block_sizes) - 1)),
+                dropout_trasnfomer=0.2,
+                drop_path=drop_pat_dropout * (ind / (len(block_sizes) - 1)),
             )
             self.blocks.append(block)
 
-        self.proj_out = nn.Linear(block_sizes[-1], 2)
+        self.enc = ContinuousTransformerWrapper(
+            dim_in=dim,
+            dim_out=2,
+            max_seq_len=512,
+            attn_layers=Encoder(
+                dim=dim,
+                depth=transformer_depth,
+                attn_flash=True,
+                rotary_pos_emb=True,
+                attn_gate_values=True,
+                attn_head_scale=True,
+                ff_post_act_ln=True,
+                attn_qk_norm=True,
+                attn_qk_norm_dim_scale=True,
+                layer_dropout=drop_pat_dropout,  # stochastic depth - dropout entire layer
+                attn_dropout=dropout,  # dropout post-attention
+            ),
+        )
 
     def forward(self, x0):
         mask = x0["mask"]
@@ -934,9 +1019,9 @@ class RnaModelConvV3(nn.Module):
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
 
         x = self.extractor(x, src_key_padding_mask=~mask)
+        res = x
         for i, blk in enumerate(self.blocks):
             x = blk(x, bpp, bpp_extra, ss, mask)
-
-        x = self.proj_out(x)
+        x = self.enc(x + res, mask=mask)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
