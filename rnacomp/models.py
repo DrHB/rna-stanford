@@ -17,7 +17,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'CombinationTransformerEncoderV2Corr', 'RNA_ModelV25Corrected', 'CombinationTransformerEncoderV1U',
            'RNA_ModelV25U', 'GRUGating', 'CombinationTransformerEncoderV2', 'RNA_ModelV26', 'MlpConv', 'Conv1DV3',
            'ExtractorV3', 'RNA_ModelV27', 'Sequential', 'GLU', 'ReluSquared', 'init_zero_', 'FeedForwardV3',
-           'CombinationTransformerEncoderV3', 'RNA_ModelV28']
+           'CombinationTransformerEncoderV3', 'RNA_ModelV28', 'CombinationTransformerEncoderV29', 'RNA_ModelV29']
 
 # %% ../nbs/01_models.ipynb 1
 import sys
@@ -2843,10 +2843,6 @@ class CombinationTransformerEncoderV1(nn.Module):
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
 
         return x + res
-    
-    
-
-
 
 
 class RNA_ModelV25(nn.Module):
@@ -2912,8 +2908,8 @@ class RNA_ModelV25(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
+
+
 class CombinationV2(nn.Sequential):
     def __init__(self, ch, dropout=0.2):
         super().__init__(
@@ -2934,8 +2930,8 @@ class CombinationV2(nn.Sequential):
         h = torch.bmm(x.permute(0, 2, 1), bpp).permute(0, 2, 1)
         h = super().forward(h)
         return self.relu(x + h)
-    
-    
+
+
 class CombinationTransformerEncoderV2Corr(nn.Module):
     def __init__(
         self,
@@ -2988,8 +2984,8 @@ class CombinationTransformerEncoderV2Corr(nn.Module):
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
 
         return x + res
-    
-    
+
+
 class RNA_ModelV25Corrected(nn.Module):
     def __init__(
         self,
@@ -3054,6 +3050,7 @@ class RNA_ModelV25Corrected(nn.Module):
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
 
+
 class CombinationTransformerEncoderV1U(nn.Module):
     def __init__(
         self,
@@ -3114,7 +3111,8 @@ class CombinationTransformerEncoderV1U(nn.Module):
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
 
         return self.out(x + res)
-    
+
+
 class RNA_ModelV25U(nn.Module):
     def __init__(
         self,
@@ -3161,6 +3159,7 @@ class RNA_ModelV25U(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+
 
 class GRUGating(nn.Module):
     def __init__(self, dim, scale_residual=False, **kwargs):
@@ -3439,55 +3438,49 @@ class RNA_ModelV27(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
+
+
 def Sequential(*modules):
     return nn.Sequential(*filter(exists, modules))
 
 
 class GLU(nn.Module):
-    def __init__(
-        self,
-        dim_in,
-        dim_out,
-        activation: Callable,
-        mult_bias = False
-    ):
+    def __init__(self, dim_in, dim_out, activation: Callable, mult_bias=False):
         super().__init__()
         self.act = activation
         self.proj = nn.Linear(dim_in, dim_out * 2)
-        self.mult_bias = nn.Parameter(torch.ones(dim_out)) if mult_bias else 1.
+        self.mult_bias = nn.Parameter(torch.ones(dim_out)) if mult_bias else 1.0
 
     def forward(self, x):
-        x, gate = self.proj(x).chunk(2, dim = -1)
+        x, gate = self.proj(x).chunk(2, dim=-1)
         return x * self.act(gate) * self.mult_bias
 
 
 class ReluSquared(nn.Module):
     def forward(self, x):
         return F.relu(x) ** 2
-    
-def init_zero_(layer):
-    nn.init.constant_(layer.weight, 0.)
-    if exists(layer.bias):
-        nn.init.constant_(layer.bias, 0.)
 
+
+def init_zero_(layer):
+    nn.init.constant_(layer.weight, 0.0)
+    if exists(layer.bias):
+        nn.init.constant_(layer.bias, 0.0)
 
 
 class FeedForwardV3(nn.Module):
     def __init__(
         self,
         dim,
-        dim_out = None,
-        mult = 4,
-        glu = False,
-        glu_mult_bias = False,
-        swish = False,
-        relu_squared = False,
-        post_act_ln = False,
-        dropout = 0.,
-        no_bias = False,
-        zero_init_output = False
+        dim_out=None,
+        mult=4,
+        glu=False,
+        glu_mult_bias=False,
+        swish=False,
+        relu_squared=False,
+        post_act_ln=False,
+        dropout=0.0,
+        no_bias=False,
+        zero_init_output=False,
     ):
         super().__init__()
         inner_dim = int(dim * mult)
@@ -3501,18 +3494,17 @@ class FeedForwardV3(nn.Module):
             activation = nn.GELU()
 
         if glu:
-            project_in = GLU(dim, inner_dim, activation, mult_bias = glu_mult_bias)
+            project_in = GLU(dim, inner_dim, activation, mult_bias=glu_mult_bias)
         else:
             project_in = nn.Sequential(
-                nn.Linear(dim, inner_dim, bias = not no_bias),
-                activation
+                nn.Linear(dim, inner_dim, bias=not no_bias), activation
             )
 
         self.ff = Sequential(
             project_in,
             nn.LayerNorm(inner_dim) if post_act_ln else None,
             nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim_out, bias = not no_bias)
+            nn.Linear(inner_dim, dim_out, bias=not no_bias),
         )
 
         # init last linear layer to 0
@@ -3521,7 +3513,8 @@ class FeedForwardV3(nn.Module):
 
     def forward(self, x):
         return self.ff(x)
-    
+
+
 class CombinationTransformerEncoderV3(nn.Module):
     def __init__(
         self,
@@ -3566,24 +3559,25 @@ class CombinationTransformerEncoderV3(nn.Module):
         x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
         x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
         return x
-    
+
     def get_bpp_extra(self, x, bpp_extra, mask):
         x = self.bpp_extra_combination(x, bpp_extra, src_key_padding_mask=~mask)
         x = self.transformer_encoder_bpp_extra(x, key_padding_mask=~mask)
         return x
-    
+
     def get_ss(self, x, ss, mask):
         x = self.ss_combination(x, ss, src_key_padding_mask=~mask)
         x = self.transformer_encoder_ss(x, key_padding_mask=~mask)
         return x
-    
+
     def forward(self, x, bpp, bpp_extra, ss, mask):
         res = x
         x_bpp = self.get_bpp(x, bpp, mask)
         x_bpp = self.get_bpp_extra(x_bpp, bpp_extra, mask)
         x_bpp = self.get_ss(x_bpp, ss, mask)
         return x_bpp + res
-    
+
+
 class RNA_ModelV28(nn.Module):
     def __init__(
         self,
@@ -3647,5 +3641,92 @@ class RNA_ModelV28(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
 
+
+class CombinationTransformerEncoderV29(nn.Module):
+    def __init__(
+        self,
+        dim,
+        head_size,
+        drop_path,
+        dropout,
+    ):
+        super().__init__()
+        self.transformer_encoder_bpp = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+        self.bpp_combination = Combination(dim)
+
+    def forward(self, x, bpp, mask):
+        res = x
+        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
+        x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
+        return x + res
+
+
+class RNA_ModelV29(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=4,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=16,
+    ):
+        super().__init__()
+
+        self.extractor = Extractor(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV29(
+                    dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+        bpp = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax]
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, mask)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x

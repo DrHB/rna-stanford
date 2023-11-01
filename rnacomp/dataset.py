@@ -11,9 +11,10 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetBaselineSplitssbppV2', 'RNA_DatasetBaselineSplitssbppV3', 'RNA_DatasetBaselineSplitssbppV4',
            'RNA_DatasetBaselineSplitssbppV5', 'RNA_DatasetBaselineSplitssbppV5BTTA', 'RNA_DatasetBaselineSplitssbppV6',
            'RNA_DatasetBaselineFM', 'RNA_DatasetBaselineSplitssbppV7Flip', 'RNA_DatasetBaselineSplitssbppV6SAVED',
-           'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS',
-           'RNA_Dataset_TestBppSSFullV0', 'RNA_Dataset_TestBppSSFullV1', 'RNA_Dataset_TestBppSSFullV2',
-           'RNA_Dataset_TestBppSSFullV3', 'RNA_Dataset_TestBppSSFullV4', 'RNA_Dataset_TestSavedV0']
+           'RNA_DatasetBaselineSplitssbppV7SAVED', 'RNA_Dataset_Test', 'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss',
+           'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0', 'RNA_Dataset_TestBppSSFullV1',
+           'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3', 'RNA_Dataset_TestBppSSFullV4',
+           'RNA_Dataset_TestSavedV0']
 
 # %% ../nbs/00_dataset.ipynb 1
 import pandas as pd
@@ -2372,6 +2373,103 @@ class RNA_DatasetBaselineSplitssbppV6SAVED(Dataset):
                 "mask": mask,
                 "ss_adj": ss,
                 "bb_matrix_full_prob": bpp,
+                "bb_matrix_full_prob_extra": bpp_extra,
+            }
+        ), deepcopy({"react": react, "react_err": react_err, "sn": sn, "mask": mask})
+        
+        
+class RNA_DatasetBaselineSplitssbppV7SAVED(Dataset):
+    def __init__(
+        self,
+        df,
+        mode="train",
+        seed=2023,
+        fold=0,
+        nfolds=4,
+        mask_only=False,
+        sn_train=True,
+        extra_bpp_path=Path("../eda/bpp/comb"),
+        extra_bpp=["vienna_2", "contrafold_2", "rnaformer",],
+        **kwargs,
+    ):
+        """
+        short sequence without adapters
+        """
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        self.Lmax = 206
+        df["L"] = df.sequence.apply(len)
+        df_2A3 = df.loc[df.experiment_type == "2A3_MaP"].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type == "DMS_MaP"].reset_index(drop=True)
+
+        if mode != "train" or sn_train:
+            m = (df_2A3["SN_filter"].values > 0) & (df_DMS["SN_filter"].values > 0)
+            df_2A3 = df_2A3.loc[m].reset_index(drop=True)
+            df_DMS = df_DMS.loc[m].reset_index(drop=True)
+
+        self.L = df_2A3["L"].values
+        self.seq = df_2A3['sequence'].values
+        self.react_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_0" in c]
+        ].values
+        self.react_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_0" in c]
+        ].values
+        self.react_err_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_error_0" in c]
+        ].values
+        self.react_err_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_error_0" in c]
+        ].values
+        self.sn_2A3 = df_2A3["signal_to_noise"].values
+        self.sn_DMS = df_DMS["signal_to_noise"].values
+        self.mask_only = mask_only
+        self.extra_bpp = extra_bpp
+        self.extra_bpp_path = extra_bpp_path
+        self.sequence_id = df_2A3['sequence_id'].values
+
+    def __len__(self):
+        return len(self.seq)
+
+    def __getitem__(self, idx):
+        seq = self.seq[idx]
+        L = len(seq)
+        if self.mask_only:
+            mask = torch.zeros(self.Lmax, dtype=torch.bool)
+            mask[:L] = True
+            return {'mask':mask},{'mask':mask}
+        #seq = [self.seq_map[s] for s in seq]
+        seq0 = np.array([*seq])
+        seq = np.zeros(L,dtype=np.int64)
+        for k in self.seq_map: 
+            seq[seq0 == k] = self.seq_map[k]
+        seq = torch.from_numpy(seq)
+        
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[:L] = True
+        
+        react = torch.from_numpy(np.stack([self.react_2A3[idx],self.react_DMS[idx]],-1))
+        react_err = torch.from_numpy(np.stack([self.react_err_2A3[idx],self.react_err_DMS[idx]],-1))
+        if react.shape[0] != self.Lmax:
+            react = F.pad(react,(0,0,0,self.Lmax-react.shape[0]), value=torch.nan)
+            react_err = F.pad(react_err,(0,0,0,self.Lmax-react_err.shape[0]), value=torch.nan)
+            
+        sn = torch.FloatTensor([self.sn_2A3[idx],self.sn_DMS[idx]])
+        
+        data = np.load(self.extra_bpp_path/f'{self.sequence_id[idx]}.npz')
+        
+        ss =  torch.from_numpy(data['ss_vienna'].astype(np.float32))
+        bpp = torch.from_numpy(data['bpp_org'].astype(np.float32))
+        bpp_extra = torch.stack([torch.from_numpy(data[i].astype(np.float32)) for i in self.extra_bpp] + [ss, bpp], dim=0).mean(0)
+
+                    
+        bpp_extra = F.pad(bpp_extra, (0, self.Lmax - L, 0, self.Lmax - L))
+        ss = F.pad(ss, (0, self.Lmax - L, 0, self.Lmax - L))
+
+        return deepcopy(
+            {
+                "seq": seq,
+                "mask": mask,
+                "ss_adj": ss,
                 "bb_matrix_full_prob_extra": bpp_extra,
             }
         ), deepcopy({"react": react, "react_err": react_err, "sn": sn, "mask": mask})

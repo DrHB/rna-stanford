@@ -5,9 +5,9 @@ __all__ = ['good_luck', 'conv_block', 'up_conv', 'U_Net', 'UnetWrapper2D', 'gene
            'ScaledSinuEmbedding', 'CustomEmbedding', 'SeqToImage', 'Attn_pool', 'FeedForwardV5', 'RnaModelConvV0',
            'SELayer', 'Conv1D', 'ResBlock', 'Extractor', 'LocalBlock', 'EffBlock', 'MappingBlock', 'ResidualConcat',
            'LegNet', 'RnaModelConvV1', 'EffBlockV2', 'LocalBlockV2', 'ConvolutionConcatBlockV2', 'CustomConvdV2',
-           'RnaModelConvV2', 'ConvolutionConcatBlockV3', 'RnaModelConvV3']
+           'RnaModelConvV2', 'ConvolutionConcatBlockV3', 'RnaModelConvV3', 'ConvolutionConcatBlockV4', 'RnaModelConvV4']
 
-# %% ../nbs/01_modelsconv.ipynb 1
+# %% ../nbs/01_modelsconv.ipynb 4
 import sys
 sys.path.append('/opt/slh/rna/')
 import torch
@@ -25,15 +25,16 @@ import numpy as np
 from torch_geometric.utils import to_dense_batch
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
 from torch_geometric.nn import GATConv, GCNConv
-from .models import CombinationTransformerEncoderV1, Block_conv
+from .models import CombinationTransformerEncoderV1, Block_conv, CombinationTransformerEncoderV29
 from x_transformers import ContinuousTransformerWrapper, Encoder, TransformerWrapper
+import matplotlib.pyplot as plt
 
 
-# %% ../nbs/01_modelsconv.ipynb 3
+
 def good_luck():
     return True
 
-# %% ../nbs/01_modelsconv.ipynb 5
+# %% ../nbs/01_modelsconv.ipynb 7
 class conv_block(nn.Module):
     def __init__(self, ch_in, ch_out):
         super(conv_block, self).__init__()
@@ -1023,5 +1024,117 @@ class RnaModelConvV3(nn.Module):
         for i, blk in enumerate(self.blocks):
             x = blk(x, bpp, bpp_extra, ss, mask)
         x = self.enc(x + res, mask=mask)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+    
+    
+    
+class ConvolutionConcatBlockV4(nn.Module):
+    def __init__(
+        self,
+        in_ch=256,
+        ks=7,
+        resize_factor=4,
+        filter_per_group=1,
+        activation=nn.GELU,
+        out_ch=None,
+        dropout=0.2,
+        head_size=32,
+        dropout_trasnfomer=0.2,
+        drop_path=0.2,
+    ):
+        super().__init__()
+        self.effblock = EffBlock(
+            in_ch=in_ch,
+            out_ch=out_ch,
+            ks=ks,
+            resize_factor=4,
+            activation=activation,
+            filter_per_group=filter_per_group,
+            se_type="simple",
+            inner_dim_calculation="out",
+        )
+        self.t_block = CombinationTransformerEncoderV29(
+            in_ch,
+            head_size=head_size,
+            dropout=dropout_trasnfomer,
+            drop_path=drop_path,
+        )
+
+    def forward(self, x, bpp, mask):
+        res = x
+        x = self.t_block(x, bpp, mask)
+        x = self.effblock(x.permute(0, 2, 1)).permute(0, 2, 1)
+        return x + res
+
+
+class RnaModelConvV4(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        resize_factor=4,
+        ks=7,
+        activation=nn.SiLU,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        transformer_depth=10,
+    ):
+        super().__init__()
+        block_sizes = [dim, dim, dim, dim, dim, dim]
+        self.extractor = Extractor(dim)
+
+        self.blocks = nn.ModuleList()
+        for ind, (prev_sz, sz) in enumerate(zip(block_sizes[:-1], block_sizes[1:])):
+            block = ConvolutionConcatBlockV4(
+                in_ch=prev_sz,
+                out_ch=sz,
+                ks=ks,
+                resize_factor=resize_factor,
+                activation=activation,
+                dropout=dropout,
+                head_size=32,
+                dropout_trasnfomer=0.2,
+                drop_path=drop_pat_dropout * (ind / (len(block_sizes) - 1)),
+            )
+            self.blocks.append(block)
+            
+        self.t_blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (transformer_depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(transformer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+
+
+        bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
+
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, bpp_extra,  mask)
+
+        for i, blk in enumerate(self.t_blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
