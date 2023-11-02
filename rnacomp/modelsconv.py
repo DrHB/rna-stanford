@@ -7,7 +7,7 @@ __all__ = ['good_luck', 'conv_block', 'up_conv', 'U_Net', 'UnetWrapper2D', 'gene
            'LegNet', 'RnaModelConvV1', 'EffBlockV2', 'LocalBlockV2', 'ConvolutionConcatBlockV2', 'CustomConvdV2',
            'RnaModelConvV2', 'ConvolutionConcatBlockV3', 'RnaModelConvV3', 'ConvolutionConcatBlockV4', 'RnaModelConvV4']
 
-# %% ../nbs/01_modelsconv.ipynb 4
+# %% ../nbs/01_modelsconv.ipynb 3
 import sys
 sys.path.append('/opt/slh/rna/')
 import torch
@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 def good_luck():
     return True
 
-# %% ../nbs/01_modelsconv.ipynb 7
+# %% ../nbs/01_modelsconv.ipynb 6
 class conv_block(nn.Module):
     def __init__(self, ch_in, ch_out):
         super(conv_block, self).__init__()

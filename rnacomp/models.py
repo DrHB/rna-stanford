@@ -18,9 +18,10 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'RNA_ModelV25U', 'GRUGating', 'CombinationTransformerEncoderV2', 'RNA_ModelV26', 'MlpConv', 'Conv1DV3',
            'ExtractorV3', 'RNA_ModelV27', 'Sequential', 'GLU', 'ReluSquared', 'init_zero_', 'FeedForwardV3',
            'CombinationTransformerEncoderV3', 'RNA_ModelV28', 'CombinationTransformerEncoderV29', 'RNA_ModelV29',
-           'RNA_ModelV30FN']
+           'RNA_ModelV30FN', 'CombinationTransformerEncoderV31', 'CombineNblocksV31', 'RNA_ModelV31',
+           'CombinationTransformerEncoderV32', 'CombineNblocksV32', 'RNA_ModelV32']
 
-# %% ../nbs/01_models.ipynb 1
+# %% ../nbs/01_models.ipynb 2
 import sys
 sys.path.append('/opt/slh/rna/eda/RNA-FM')
 import torch
@@ -42,7 +43,7 @@ import fm
 from typing import List, Callable, Optional
 
 
-# %% ../nbs/01_models.ipynb 2
+# %% ../nbs/01_models.ipynb 3
 def exists(val):
     return val is not None
 
@@ -446,7 +447,7 @@ class DifformerCustomV0(nn.Module):
         
         
 
-# %% ../nbs/01_models.ipynb 3
+# %% ../nbs/01_models.ipynb 4
 class DropPath(nn.Module):
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
@@ -2167,7 +2168,7 @@ class EncoderResidualCombBlockV1(nn.Module):
             x = self.comb(x, bpp)
         return x
 
-# %% ../nbs/01_models.ipynb 4
+# %% ../nbs/01_models.ipynb 5
 class RNA_ModelV17(nn.Module):
     def __init__(
         self,
@@ -3731,8 +3732,8 @@ class RNA_ModelV29(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
-    
-    
+
+
 class RNA_ModelV30FN(nn.Module):
     def __init__(
         self,
@@ -3745,7 +3746,7 @@ class RNA_ModelV30FN(nn.Module):
     ):
         super().__init__()
 
-        self.extractor = Extractor(dim//2)
+        self.extractor = Extractor(dim // 2)
         self.blocks = nn.ModuleList(
             [
                 Block_conv(
@@ -3763,7 +3764,7 @@ class RNA_ModelV30FN(nn.Module):
         self.ff_comb_blocks = nn.ModuleList(
             [
                 CombinationTransformerEncoderV2(
-                    dim//2,
+                    dim // 2,
                     head_size=head_size,
                     dropout=dropout,
                     drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
@@ -3771,12 +3772,11 @@ class RNA_ModelV30FN(nn.Module):
                 for i in range(bpp_transfomer_depth)
             ]
         )
-        
-        
+
         self.bb_comb_blocks = nn.ModuleList(
             [
                 CombinationTransformerEncoderV2(
-                    dim//2,
+                    dim // 2,
                     head_size=head_size,
                     dropout=dropout,
                     drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
@@ -3789,23 +3789,22 @@ class RNA_ModelV30FN(nn.Module):
         self.model_fm, _ = fm.pretrained.rna_fm_t12()
         self.fm_projection = nn.Sequential(nn.Linear(640, dim // 2))
 
-
     def forward(self, x0):
         mask = x0["mask"]
         L0 = mask.shape[1]
         Lmax = mask.sum(-1).max()
         mask = mask[:, :Lmax]
-        
+
         x = x0["seq"][:, :Lmax]
-        x_fm = x0["seq_rnafm"][:, :Lmax+2]
+        x_fm = x0["seq_rnafm"][:, : Lmax + 2]
         bpp = x0["bb_matrix_full_prob"][:, :Lmax, :Lmax]
         bpp_extra = x0["bb_matrix_full_prob_extra"][:, :Lmax, :Lmax].float()
         ss = x0["ss_adj"][:, :Lmax, :Lmax].float()
-        
+
         with torch.no_grad():
             x_fm = self.model_fm(x_fm, repr_layers=[12])
             x_fm = x_fm["representations"][12][:, 1:-1, :]  # remove start and end token
-        
+
         x_fm = self.fm_projection(x_fm)
         x = self.extractor(x, src_key_padding_mask=~mask)
 
@@ -3814,11 +3813,247 @@ class RNA_ModelV30FN(nn.Module):
 
         for i, blk in enumerate(self.ff_comb_blocks):
             x_fm = blk(x_fm, bpp, bpp_extra, ss, mask)
-        
+
         x = torch.concat([x, x_fm], dim=-1)
         for i, blk in enumerate(self.blocks):
             x = blk(x, key_padding_mask=~mask)
-            
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+
+
+class CombinationTransformerEncoderV31(nn.Module):
+    def __init__(
+        self,
+        dim,
+        head_size,
+        drop_path,
+        dropout,
+    ):
+        super().__init__()
+        self.transformer_encoder_bpp = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+        self.bpp_combination = Combination(dim)
+
+    def forward(self, x, bpp, mask):
+        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
+        x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
+        return x
+
+
+class CombineNblocksV31(nn.Module):
+    def __init__(self, dim, n_layers, head_size, drop_path, dropout):
+        super().__init__()
+        self.blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV31(
+                    dim=dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_path,
+                )
+                for i in range(n_layers)
+            ]
+        )
+
+    def forward(self, x, bpp, mask):
+        res = x
+        for i, blk in enumerate(self.blocks):
+            x = blk(
+                x,
+                bpp[
+                    :,
+                    i,
+                ],
+                mask,
+            )
+        return x + res
+
+
+class RNA_ModelV31(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=4,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=4,
+        number_of_bpps=5,
+    ):
+        super().__init__()
+
+        self.extractor = Extractor(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombineNblocksV31(
+                    dim,
+                    n_layers=number_of_bpps,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bpp = x0["bb_matrix_full_prob_extra"][:, :, :Lmax, :Lmax]
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, mask)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
+        x = self.proj_out(x)
+        x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
+        return x
+    
+class CombinationTransformerEncoderV32(nn.Module):
+    def __init__(
+        self,
+        dim,
+        head_size,
+        drop_path,
+        dropout,
+    ):
+        super().__init__()
+        self.transformer_encoder_bpp = Block_conv(
+            dim=dim,
+            num_heads=dim // head_size,
+            mlp_ratio=4,
+            drop_path=drop_path,
+            init_values=1,
+            drop=dropout,
+        )
+        self.bpp_combination = Combination(dim)
+
+    def forward(self, x, bpp, mask):
+        res = x 
+        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
+        x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
+        return x + res
+
+
+class CombineNblocksV32(nn.Module):
+    def __init__(self, dim, n_layers, head_size, drop_path, dropout):
+        super().__init__()
+        self.blocks = nn.ModuleList(
+            [
+                CombinationTransformerEncoderV32(
+                    dim=dim,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_path,
+                )
+                for i in range(n_layers)
+            ]
+        )
+
+    def forward(self, x, bpp, mask):
+        res = x
+        for i, blk in enumerate(self.blocks):
+            x = blk(
+                x,
+                bpp[
+                    :,
+                    i,
+                ],
+                mask,
+            )
+        return x + res
+
+
+class RNA_ModelV32(nn.Module):
+    def __init__(
+        self,
+        dim=192,
+        depth=4,
+        head_size=32,
+        drop_pat_dropout=0.2,
+        dropout=0.2,
+        bpp_transfomer_depth=4,
+        number_of_bpps=5,
+    ):
+        super().__init__()
+
+        self.extractor = Extractor(dim)
+        self.blocks = nn.ModuleList(
+            [
+                Block_conv(
+                    dim=dim,
+                    num_heads=dim // head_size,
+                    mlp_ratio=4,
+                    drop_path=drop_pat_dropout * (i / (depth - 1)),
+                    init_values=1,
+                    drop=dropout,
+                )
+                for i in range(depth)
+            ]
+        )
+
+        self.bb_comb_blocks = nn.ModuleList(
+            [
+                CombineNblocksV32(
+                    dim,
+                    n_layers=number_of_bpps,
+                    head_size=head_size,
+                    dropout=dropout,
+                    drop_path=drop_pat_dropout * (i / (bpp_transfomer_depth - 1)),
+                )
+                for i in range(bpp_transfomer_depth)
+            ]
+        )
+
+        self.proj_out = nn.Sequential(nn.Linear(dim, 2))
+
+    def forward(self, x0):
+        mask = x0["mask"]
+        L0 = mask.shape[1]
+        Lmax = mask.sum(-1).max()
+        mask = mask[:, :Lmax]
+        x = x0["seq"][:, :Lmax]
+        bpp = x0["bb_matrix_full_prob_extra"][:, :, :Lmax, :Lmax]
+
+        x = self.extractor(x, src_key_padding_mask=~mask)
+
+        for i, blk in enumerate(self.bb_comb_blocks):
+            x = blk(x, bpp, mask)
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, key_padding_mask=~mask)
+
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
