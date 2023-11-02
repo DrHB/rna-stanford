@@ -1079,7 +1079,7 @@ class RnaModelConvV4(nn.Module):
         head_size=32,
         drop_pat_dropout=0.2,
         dropout=0.2,
-        transformer_depth=10,
+        transformer_depth=12,
     ):
         super().__init__()
         block_sizes = [dim, dim, dim, dim, dim, dim]
