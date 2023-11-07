@@ -19,7 +19,7 @@ __all__ = ['List', 'exists', 'default', 'PreNorm', 'Residual', 'GatedResidual', 
            'ExtractorV3', 'RNA_ModelV27', 'Sequential', 'GLU', 'ReluSquared', 'init_zero_', 'FeedForwardV3',
            'CombinationTransformerEncoderV3', 'RNA_ModelV28', 'CombinationTransformerEncoderV29', 'RNA_ModelV29',
            'RNA_ModelV30FN', 'CombinationTransformerEncoderV31', 'CombineNblocksV31', 'RNA_ModelV31',
-           'CombinationTransformerEncoderV32', 'CombineNblocksV32', 'RNA_ModelV32']
+           'CombineNblocksV32', 'RNA_ModelV32']
 
 # %% ../nbs/01_models.ipynb 2
 import sys
@@ -3940,30 +3940,8 @@ class RNA_ModelV31(nn.Module):
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
     
-class CombinationTransformerEncoderV32(nn.Module):
-    def __init__(
-        self,
-        dim,
-        head_size,
-        drop_path,
-        dropout,
-    ):
-        super().__init__()
-        self.transformer_encoder_bpp = Block_conv(
-            dim=dim,
-            num_heads=dim // head_size,
-            mlp_ratio=4,
-            drop_path=drop_path,
-            init_values=1,
-            drop=dropout,
-        )
-        self.bpp_combination = Combination(dim)
+    
 
-    def forward(self, x, bpp, mask):
-        res = x 
-        x = self.transformer_encoder_bpp(x, key_padding_mask=~mask)
-        x = self.bpp_combination(x, bpp, src_key_padding_mask=~mask)
-        return x + res
 
 
 class CombineNblocksV32(nn.Module):
@@ -3971,7 +3949,7 @@ class CombineNblocksV32(nn.Module):
         super().__init__()
         self.blocks = nn.ModuleList(
             [
-                CombinationTransformerEncoderV32(
+                CombinationTransformerEncoderV31(
                     dim=dim,
                     head_size=head_size,
                     dropout=dropout,
@@ -3982,7 +3960,6 @@ class CombineNblocksV32(nn.Module):
         )
 
     def forward(self, x, bpp, mask):
-        res = x
         for i, blk in enumerate(self.blocks):
             x = blk(
                 x,
@@ -3992,7 +3969,7 @@ class CombineNblocksV32(nn.Module):
                 ],
                 mask,
             )
-        return x + res
+        return x 
 
 
 class RNA_ModelV32(nn.Module):
@@ -4057,3 +4034,5 @@ class RNA_ModelV32(nn.Module):
         x = self.proj_out(x)
         x = F.pad(x, (0, 0, 0, L0 - Lmax, 0, 0))
         return x
+    
+
