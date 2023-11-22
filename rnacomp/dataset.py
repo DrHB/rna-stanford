@@ -11,9 +11,10 @@ __all__ = ['good_luck', 'LenMatchBatchSampler', 'dict_to', 'to_device', 'DeviceD
            'RNA_DatasetBaselineSplitssbppV2', 'RNA_DatasetBaselineSplitssbppV3', 'RNA_DatasetBaselineSplitssbppV4',
            'RNA_DatasetBaselineSplitssbppV5', 'RNA_DatasetBaselineSplitssbppV5BTTA', 'RNA_DatasetBaselineSplitssbppV6',
            'RNA_DatasetBaselineFM', 'RNA_DatasetBaselineSplitssbppV7Flip', 'RNA_DatasetBaselineSplitssbppV6SAVED',
-           'RNA_DatasetBaselineSplitssbppV6SAVEDwithFM', 'RNA_DatasetBaselineSplitssbppV6SAVEDwithoutFM',
-           'RNA_DatasetBaselineSplitssbppV7SAVED', 'RNA_DatasetBaselineSplitssbppV6SAVEDFM',
-           'RNA_DatasetBaselineSplitssbppV8SAVED', 'RNA_DatasetEXV0', 'RNA_DatasetEXV1', 'RNA_Dataset_Test',
+           'RNA_DatasetBaselineSplitssbppV6SAVEDwithFM', 'RNA_DatasetBaselineSplitssbppV6SAVEDwithFMFlip',
+           'RNA_DatasetBaselineSplitssbppV6SAVEDwithoutFM', 'RNA_DatasetBaselineSplitssbppV7SAVED',
+           'RNA_DatasetBaselineSplitssbppV6SAVEDFM', 'RNA_DatasetBaselineSplitssbppV8SAVED', 'RNA_DatasetEXV0',
+           'RNA_DatasetEXV0Flip', 'RNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSD', 'RNA_Dataset_Test',
            'RNA_Dataset_TestBpp', 'RNA_Dataset_Testss', 'RNA_Dataset_TestBppSS', 'RNA_Dataset_TestBppSSFullV0',
            'RNA_Dataset_TestBppSSFullV1', 'RNA_Dataset_TestBppSSFullV2', 'RNA_Dataset_TestBppSSFullV3',
            'RNA_Dataset_TestBppSSFullV4', 'RNA_Dataset_TestBppSSFullV5', 'RNA_Dataset_TestSavedV0']
@@ -31,6 +32,7 @@ from tqdm import tqdm
 from sklearn.model_selection import KFold
 import random
 from copy import deepcopy   
+import pickle
 
 
 import matplotlib.pyplot as plt
@@ -2501,13 +2503,155 @@ class RNA_DatasetBaselineSplitssbppV6SAVEDwithFM(Dataset):
                 "bb_matrix_full_prob": bpp,
                 "bb_matrix_full_prob_extra": bpp_extra,
             }
-        ), deepcopy({"react": react, "react_err": react_err, "mask": mask, 
-                                              'react_ex':torch.full((self.Lmax,12),torch.nan),
-                         'react_ex_err':torch.full((self.Lmax,12),torch.nan),
-                         })
-        
+        ), deepcopy(
+            {
+                "react": react,
+                "react_err": react_err,
+                "mask": mask,
+                "react_ex": torch.full((self.Lmax, 12), torch.nan),
+                "react_ex_err": torch.full((self.Lmax, 12), torch.nan),
+            }
+        )
+
+
+class RNA_DatasetBaselineSplitssbppV6SAVEDwithFMFlip(Dataset):
+    def __init__(
+        self,
+        df,
+        mode="train",
+        seed=2023,
+        fold=0,
+        nfolds=4,
+        mask_only=False,
+        sn_train=True,
+        extra_bpp_path=Path("../eda/bpp/comb"),
+        extra_bpp=[
+            "vienna_2",
+            "contrafold_2",
+            "rnaformer",
+        ],
+        Lmax=206,
+        **kwargs,
+    ):
+        """
+        short sequence without adapters
+        """
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        self.Lmax = Lmax
+        df["L"] = df.sequence.apply(len)
+        df_2A3 = df.loc[df.experiment_type == "2A3_MaP"].reset_index(drop=True)
+        df_DMS = df.loc[df.experiment_type == "DMS_MaP"].reset_index(drop=True)
+
+        if mode != "train" or sn_train:
+            m = (df_2A3["SN_filter"].values > 0) & (df_DMS["SN_filter"].values > 0)
+            df_2A3 = df_2A3.loc[m].reset_index(drop=True)
+            df_DMS = df_DMS.loc[m].reset_index(drop=True)
+
+        self.L = df_2A3["L"].values
+        self.seq = df_2A3["sequence"].values
+        self.react_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_0" in c]
+        ].values
+        self.react_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_0" in c]
+        ].values
+        self.react_err_2A3 = df_2A3[
+            [c for c in df_2A3.columns if "reactivity_error_0" in c]
+        ].values
+        self.react_err_DMS = df_DMS[
+            [c for c in df_DMS.columns if "reactivity_error_0" in c]
+        ].values
+        self.sn_2A3 = df_2A3["signal_to_noise"].values
+        self.sn_DMS = df_DMS["signal_to_noise"].values
+        self.mask_only = mask_only
+        self.extra_bpp = extra_bpp
+        self.extra_bpp_path = extra_bpp_path
+        self.sequence_id = df_2A3["sequence_id"].values
+        self.mode = mode
+
+    def __len__(self):
+        return len(self.seq)
+
+    def __getitem__(self, idx):
+        seq = self.seq[idx]
+        L = len(seq)
+        if self.mask_only:
+            mask = torch.zeros(self.Lmax, dtype=torch.bool)
+            mask[:L] = True
+            return {"mask": mask}, {"mask": mask}
+        # seq = [self.seq_map[s] for s in seq]
+        seq0 = np.array([*seq])
+        seq = np.zeros(L, dtype=np.int64)
+        for k in self.seq_map:
+            seq[seq0 == k] = self.seq_map[k]
+        seq = torch.from_numpy(seq)
+
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[:L] = True
+
+        react = torch.from_numpy(
+            np.stack([self.react_2A3[idx], self.react_DMS[idx]], -1)
+        )
+        react_err = torch.from_numpy(
+            np.stack([self.react_err_2A3[idx], self.react_err_DMS[idx]], -1)
+        )
+        if react.shape[0] != self.Lmax:
+            react = F.pad(react, (0, 0, 0, self.Lmax - react.shape[0]), value=torch.nan)
+            react_err = F.pad(
+                react_err, (0, 0, 0, self.Lmax - react_err.shape[0]), value=torch.nan
+            )
+
+        data = np.load(self.extra_bpp_path / f"{self.sequence_id[idx]}.npz")
+
+        ss = torch.from_numpy(data["ss_vienna"].astype(np.float32))
+        bpp = torch.from_numpy(data["bpp_org"].astype(np.float32))
+        bpp_extra = [
+            torch.from_numpy(data[i].astype(np.float32)) for i in self.extra_bpp
+        ] + [
+            extra_bpp_from_numpy(
+                Path("../eda/bpp/rnafm") / f"{self.sequence_id[idx]}.npy", L, seq_len=L
+            )
+        ]
+        bpp_extra = torch.stack([*bpp_extra], dim=0).mean(0)
+
+        if self.mode == "train" and random.random() > 0.5:
+            seq = seq.flip(-1)
+            bpp = bpp.flip(-1, -2)
+            bpp_extra = bpp_extra.flip(-1, -2)
+            ss = ss.flip(-1, -2)
+
+            react = F.pad(react[:L].flip(0), (0, 0, 0, self.Lmax - L), value=torch.nan)
+            react_err = F.pad(
+                react_err[:L].flip(0), (0, 0, 0, self.Lmax - L), value=torch.nan
+            )
+
+        seq = F.pad(seq, (0, self.Lmax - L))
+        bpp = F.pad(bpp, (0, self.Lmax - L, 0, self.Lmax - L))
+        bpp_extra = F.pad(bpp_extra, (0, self.Lmax - L, 0, self.Lmax - L))
+        ss = F.pad(ss, (0, self.Lmax - L, 0, self.Lmax - L))
+
+        return deepcopy(
+            {
+                "seq": seq,
+                "mask": mask,
+                "ss_adj": ss,
+                "bb_matrix_full_prob": bpp,
+                "bb_matrix_full_prob_extra": bpp_extra,
+            }
+        ), deepcopy(
+            {
+                "react": react,
+                "react_err": react_err,
+                "mask": mask,
+                "react_ex": torch.full((self.Lmax, 12), torch.nan),
+                "react_ex_err": torch.full((self.Lmax, 12), torch.nan),
+            }
+        )
+
+
 class RNA_DatasetBaselineSplitssbppV6SAVEDwithoutFM(Dataset):
     "similar to RNA_DatasetBaselineSplitssbppV6SAVED, just added external data support"
+
     def __init__(
         self,
         df,
@@ -2621,11 +2765,15 @@ class RNA_DatasetBaselineSplitssbppV6SAVEDwithoutFM(Dataset):
                 "bb_matrix_full_prob": bpp,
                 "bb_matrix_full_prob_extra": bpp_extra,
             }
-        ), deepcopy({"react": react, "react_err": react_err, "mask": mask, 
-                                              'react_ex':torch.full((self.Lmax,12),torch.nan),
-                         'react_ex_err':torch.full((self.Lmax,12),torch.nan),
-                         })
-
+        ), deepcopy(
+            {
+                "react": react,
+                "react_err": react_err,
+                "mask": mask,
+                "react_ex": torch.full((self.Lmax, 12), torch.nan),
+                "react_ex_err": torch.full((self.Lmax, 12), torch.nan),
+            }
+        )
 
 
 class RNA_DatasetBaselineSplitssbppV7SAVED(Dataset):
@@ -2999,7 +3147,6 @@ class RNA_DatasetEXV0(Dataset):
                 ].values.copy()
             )
 
-
         self.mask_only = mask_only
         self.flip_always = flip_always
         self.repeat = repeat
@@ -3066,13 +3213,18 @@ class RNA_DatasetEXV0(Dataset):
                 "bb_matrix_full_prob": bpp,
                 "bb_matrix_full_prob_extra": bpp_extra,
             }
-        ),               deepcopy({'react':torch.full((self.Lmax,2),torch.nan),
-                         'react_err':torch.full((self.Lmax,2),torch.nan),
-                         'react_ex':react, 'react_ex_err':error,
-                         'mask':mask})  
-        
-        
-class RNA_DatasetEXV1(Dataset):
+        ), deepcopy(
+            {
+                "react": torch.full((self.Lmax, 2), torch.nan),
+                "react_err": torch.full((self.Lmax, 2), torch.nan),
+                "react_ex": react,
+                "react_ex_err": error,
+                "mask": mask,
+            }
+        )
+
+
+class RNA_DatasetEXV0Flip(Dataset):
     def __init__(
         self,
         df,
@@ -3082,9 +3234,10 @@ class RNA_DatasetEXV1(Dataset):
         extra_bpp_path=Path("../eda/bpp/rmdb_data/comb"),
         extra_bpp=["vienna_2", "contrafold_2", "rnaformerv1"],
         repeat=1,
+        mode="train",
         **kwargs,
     ):
-        #same as RNA_DatasetEXV0 but without rnafm
+        # same as RNA_DatasetEXV0 but without rnafm
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
         df["L"] = df.sequence.apply(len)
         if sn_train:
@@ -3120,12 +3273,12 @@ class RNA_DatasetEXV1(Dataset):
                 ].values.copy()
             )
 
-
         self.mask_only = mask_only
         self.flip_always = flip_always
         self.repeat = repeat
         self.extra_bpp = extra_bpp
         self.extra_bpp_path = extra_bpp_path
+        self.mode = mode
 
     def __len__(self):
         return len(self.seq) * self.repeat
@@ -3169,6 +3322,15 @@ class RNA_DatasetEXV1(Dataset):
         ]
         bpp_extra = torch.stack([*bpp_extra], dim=0).mean(0)
 
+        if self.mode == "train" and random.random() > 0.5:
+            seq = seq.flip(-1)
+            bpp = bpp.flip(-1, -2)
+            bpp_extra = bpp_extra.flip(-1, -2)
+            ss = ss.flip(-1, -2)
+
+            react = react[:L].flip(0)
+            error = error[:L].flip(0)
+
         if react.shape[0] != self.Lmax:
             react = F.pad(react, (0, 0, 0, self.Lmax - react.shape[0]), value=torch.nan)
         if error.shape[0] != self.Lmax:
@@ -3187,13 +3349,119 @@ class RNA_DatasetEXV1(Dataset):
                 "bb_matrix_full_prob": bpp,
                 "bb_matrix_full_prob_extra": bpp_extra,
             }
-        ),               deepcopy({'react':torch.full((self.Lmax,2),torch.nan),
-                         'react_err':torch.full((self.Lmax,2),torch.nan),
-                         'react_ex':react, 'react_ex_err':error,
-                         'mask':mask})      
+        ), deepcopy(
+            {
+                "react": torch.full((self.Lmax, 2), torch.nan),
+                "react_err": torch.full((self.Lmax, 2), torch.nan),
+                "react_ex": react,
+                "react_ex_err": error,
+                "mask": mask,
+            }
+        )
 
 
-# %% ../nbs/00_dataset.ipynb 6
+class RNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSD(Dataset):
+    def __init__(
+        self,
+        data,
+        orig_test_csv,
+        train_data,
+        folds_split,
+        mode="train",
+        seed=2023,
+        fold=0,
+        nfolds=4,
+        mask_only=False,
+        sn_train=True,
+        extra_bpp_path=Path("../eda/bpp/comb"),
+        extra_bpp=[
+            "vienna_2",
+            "contrafold_2",
+            "rnaformer",
+        ],
+        Lmax=457,
+        **kwargs,
+    ):
+        """
+        short sequence without adapters
+        """
+        self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
+        self.Lmax = Lmax
+
+        df_test = pd.read_csv(orig_test_csv)[["sequence_id", "sequence"]]
+        df_train = pd.read_parquet(train_data)[["sequence_id", "sequence"]]
+        df = pd.concat([df_train, df_test])
+        df = df.drop_duplicates(subset=["sequence_id"])
+
+        split = pd.read_csv(folds_split)
+        split = set(split.loc[~split.is_train, "sequence_id"])
+
+        df = df.loc[~df.sequence_id.isin(split)]
+        self.df = df.reset_index(drop=True)
+        self.data = data
+
+        self.mask_only = mask_only
+        self.extra_bpp = extra_bpp
+        self.extra_bpp_path = extra_bpp_path
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        idx, seq = self.df.loc[idx, ["sequence_id", "sequence"]]
+        L = len(seq)
+        mask = torch.zeros(self.Lmax, dtype=torch.bool)
+        mask[:L] = True
+        if self.mask_only:
+            return deepcopy({"mask": mask}), deepcopy({"mask": mask})
+        seq0 = np.array([*seq])
+        seq = np.zeros(L, dtype=np.int64)
+        for k in self.seq_map:
+            seq[seq0 == k] = self.seq_map[k]
+        seq = torch.from_numpy(seq)
+
+        react, react_err = self.data[idx]
+        data = np.load(self.extra_bpp_path / f"{idx}.npz")
+        ss = torch.from_numpy(data["ss_vienna"].astype(np.float32))
+        bpp = torch.from_numpy(data["bpp_org"].astype(np.float32))
+        bpp_extra = [
+            torch.from_numpy(data[i].astype(np.float32)) for i in self.extra_bpp
+        ] + [
+            extra_bpp_from_numpy(
+                Path("../eda/bpp/rnafm") / f"{idx}.npy", L, seq_len=L
+            )
+        ]
+        bpp_extra = torch.stack([*bpp_extra], dim=0).mean(0)
+
+        seq = F.pad(seq, (0, self.Lmax - L))
+        bpp = F.pad(bpp, (0, self.Lmax - L, 0, self.Lmax - L))
+        bpp_extra = F.pad(bpp_extra, (0, self.Lmax - L, 0, self.Lmax - L))
+        ss = F.pad(ss, (0, self.Lmax - L, 0, self.Lmax - L))
+
+        if react.shape[0] != self.Lmax:
+            react = F.pad(react, (0, 0, 0, self.Lmax - react.shape[0]), value=torch.nan)
+        if react_err.shape[0] != self.Lmax:
+            react_err = F.pad(
+                react_err, (0, 0, 0, self.Lmax - react_err.shape[0]), value=torch.nan
+            )
+
+        return deepcopy(
+            {
+                "seq": seq,
+                "mask": mask,
+                "ss_adj": ss,
+                "bb_matrix_full_prob": bpp,
+                "bb_matrix_full_prob_extra": bpp_extra,
+            }
+        ), deepcopy(
+            {
+                "react": react,
+                "react_err": react_err,
+                "mask": mask,
+            }
+        )
+
+# %% ../nbs/00_dataset.ipynb 8
 class RNA_Dataset_Test(Dataset):
     def __init__(self, df, mask_only=False, **kwargs):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
