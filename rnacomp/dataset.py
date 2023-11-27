@@ -3118,7 +3118,8 @@ class RNA_DatasetEXV0(Dataset):
         df["L"] = df.sequence.apply(len)
         if sn_train:
             df = df.loc[df.SN_filter > 0]
-        self.Lmax = df.L.max() if Lmax is None else Lmax
+        self.Lmax_ = df.L.max() 
+        self.Lmax = Lmax
         df_tmp = (
             df[["sequence_id", "sequence", "L"]]
             .groupby("sequence_id")
@@ -3183,8 +3184,8 @@ class RNA_DatasetEXV0(Dataset):
                 react.append(self.react[e][i])
                 error.append(self.error[e][i])
             else:
-                react.append(np.full(self.Lmax, np.nan, dtype=np.float32))
-                error.append(np.full(self.Lmax, np.nan, dtype=np.float32))
+                react.append(np.full(self.Lmax_, np.nan, dtype=np.float32))
+                error.append(np.full(self.Lmax_, np.nan, dtype=np.float32))
         react = torch.from_numpy(np.stack(react, -1))
         error = torch.from_numpy(np.stack(error, -1))
 
@@ -3392,7 +3393,7 @@ class RNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSD(Dataset):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
         self.Lmax = Lmax
 
-        df_test = pd.read_csv(orig_test_csv)[["sequence_id", "sequence"]]
+        df_test = pd.read_parquet(orig_test_csv)[["sequence_id", "sequence"]]
         df_train = pd.read_parquet(train_data)[["sequence_id", "sequence"]]
         df = pd.concat([df_train, df_test])
         df = df.drop_duplicates(subset=["sequence_id"])
@@ -3496,7 +3497,7 @@ class RNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSDExternal(Dataset):
         self.seq_map = {"A": 0, "C": 1, "G": 2, "U": 3}
         self.Lmax = Lmax
 
-        df_test = pd.read_csv(orig_test_csv)[["sequence_id", "sequence"]]
+        df_test = pd.read_parquet(orig_test_csv)[["sequence_id", "sequence"]]
         df_train = pd.read_parquet(train_data)[["sequence_id", "sequence"]]
         df = pd.concat([df_train, df_test])
         df = df.drop_duplicates(subset=["sequence_id"])
@@ -3566,8 +3567,8 @@ class RNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSDExternal(Dataset):
         ), deepcopy(
             {
                 
-                "react": torch.full((self.Lmax, 2), torch.nan),
-                "react_err": torch.full((self.Lmax, 2), torch.nan),
+                "react_ex": torch.full((self.Lmax, 12), torch.nan),
+                "react_ex_err": torch.full((self.Lmax, 12), torch.nan),
                 "react": react,
                 "react_err": react_err,
                 "mask": mask,
