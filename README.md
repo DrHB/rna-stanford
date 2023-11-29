@@ -37,6 +37,11 @@
 | `exp_32-ft-ex-ft-sr`   | FT `exp_32`, on `sr` and `external_data`  | `0.1245`   |  `0.145`  |
 | `exp_32_psd`   | FT `exp_32_ft`, on `final0_PLfolds_ft_tot` psudolables | `0.12361`   |  |
 | `exp_32_psd_v1`   | FT `exp_32_psd`, on `final0_PLfolds_ft_tot` psudolables | `0.1231`   |  |
+| `exp_32_psd_v3`   | FT `exp_32_psd`, on `final0_PLfolds_ft_tot` psudolables | `0.1227`   |`0.14074`  |
+| `exp_32_ft_after_psd`   | FT `exp_32_psd_v3`, ft on `sr=True` | `0.1221`   |`0.14128`  |
+| `exp_32_psd_v3_final_comb_PL_v1`   | FT `final_comb_PLfoldsEXft_tot` | `0.1222`   |  |
+| `exp_32-ft-after-PLfoldsEXft`   | FT `exp_32_psd_v3_final_comb_PL_v1`, ft on `sr=True` | `0.121`   |  |
+| `exp_32-psd_v3_ex_ft`   | FT on external dataset |  |  |
 | `exp_32_ex_ft_flip_sr`   | FT `exp_32_ex_ft_sr`, on `external`, and added `flip` augmentations | `0.1255`   |   |
 | `exp_32_v1`| This iteration replicates `exp_32`, but incorporates two key changes: 1) `bpp` is stored as a numpy array, simplifying the loading process and potentially speeding up training. 2) The `rnafm` feature, previously deemed noisy, is excluded. The primary goal is to observe any performance variations due to these changes.                                      |  `0.1250`  | `0.14491`   |
 | `exp_32_v2`| This variant is modeled after `exp_32_v1`, but incorporates a deeper `bpp_transfomer_depth` of `6`, increased from `4`. Furthermore, the training data has been sourced from `train_corrected.parquet`, which might be a refined or updated dataset. The primary goal is to see if deeper `bpp_transfomer_depth` and the new dataset enhance the performance. |  `0.1247`  |  `0.1448`  |
