@@ -40,7 +40,7 @@
 | `exp_32_psd_v3`   | FT `exp_32_psd`, on `final0_PLfolds_ft_tot` psudolables | `0.1227`   |`0.14074`  |
 | `exp_32_ft_after_psd`   | FT `exp_32_psd_v3`, ft on `sr=True` | `0.1221`   |`0.14128`  |
 | `exp_32_psd_v3_final_comb_PL_v1`   | FT `final_comb_PLfoldsEXft_tot` | `0.1222`   |  |
-| `exp_32-ft-after-PLfoldsEXft`   | FT `exp_32_psd_v3_final_comb_PL_v1`, ft on `sr=True` | `0.121`   |  |
+| `exp_32-ft-after-PLfoldsEXft`   | FT `exp_32_psd_v3_final_comb_PL_v1`, ft on `sr=True` | `0.121`   | `0.14136` |
 | `exp_32-psd_v3_ex_ft`   | FT on external dataset |  |  |
 | `exp_32_ex_ft_flip_sr`   | FT `exp_32_ex_ft_sr`, on `external`, and added `flip` augmentations | `0.1255`   |   |
 | `exp_32_v1`| This iteration replicates `exp_32`, but incorporates two key changes: 1) `bpp` is stored as a numpy array, simplifying the loading process and potentially speeding up training. 2) The `rnafm` feature, previously deemed noisy, is excluded. The primary goal is to observe any performance variations due to these changes.                                      |  `0.1250`  | `0.14491`   |
@@ -48,6 +48,8 @@
 | `exp_32_v2_ft_ex_sr`| same as `exp_32_v2`, but finetuned on external and sr |  `0.125184`  |  `0.14572`  |
 | `exp_32_v3` | This experiment mirrors `exp_32`. Additionally, the `bpp_transfomer_depth` is increased to `6` from `4`, potentially enhancing the model's ability to process and integrate bpp information. Finetuned on external dataset  |`0.1249`|`0.14463`|
 | `exp_32_v3_ex_ft_sr_ft` | This experiment mirrors `exp_32_v3`. |`0.1251`|`0.1449`|
+| `exp_32_v3_psd_v2` | ft on `exp_32_v3` using psd `final_comb_PLfoldsEXft_tot` |`0.123`|`0.1403`|
+| `exp_32_psd_v3_ex_ft` | ft on `exp_32_v3_psd_v2` using only external and `sr=true` |`0.123`|`0.1403`|
 | `exp_33`   | This experiment marks a departure from the previous transformer-based approaches, venturing into convolutional neural networks (CNNs) with the implementation of a standard EfficientNetV2_1d (referred to as efnetv2 in the context). The model integrates an initial extractor layer, funneling processed features into the EfficientNet structure. Tthe first attempt at adapting the efnetv2 for sequence data like RNA poses challenges, reflected in a local CV score of `0.1623`. | `0.1623` |       |
 | `exp_34`   | Building upon the framework established in `exp_32`, Firstly, it replaces the standard `rnatormer` bpp with `rnaformverv1`. Secondly, a critical fix was implemented in the `combination` layer, resolving an issue related to padding mask that potentially compromised previous models' learning efficiency. Unlike its predecessors, `exp_34` does not employ sampling, really bad score, did not look good, perhaps sampler or mask |    |       |
 | `exp_35`   | same as `exp_32`, but it replaces the standard `rnatormer` bpp with `rnaformverv1` , its working fine, i think i can reach same score |  sas `exp_32`  |       |
