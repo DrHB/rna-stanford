@@ -554,7 +554,7 @@ class LenMatchBatchSampler(torch.utils.data.BatchSampler):
         yielded = 0
 
         for idx in self.sampler:
-            s = self.sampleRNA_DatasetBaselineSplitssbppV6SAVEDwithFMPSDr.data_source[idx]
+            s = self.sampler.data_source[idx]
             if isinstance(s, tuple):
                 L = s[0]["mask"].sum()
             else:
