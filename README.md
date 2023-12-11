@@ -3,7 +3,7 @@
 
 ## Summary
 
-The following repository includes my scripts, experiments, and notes that document my progress through the Stanford Ribonanza RNA Folding, which can be found on Kaggle [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding) . This work resulted in 7th place and a gold medal, the full solution write up can he foound [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/discussion/460190)
+The following repository includes my scripts, experiments, and notes that document my progress through the Stanford Ribonanza RNA Folding, more ifnormation about the competition [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding) . This work resulted in 7th place and a gold medal, the full solution write up can he foound [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/discussion/460190)
 
 ## Installation
 
