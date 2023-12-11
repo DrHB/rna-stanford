@@ -1,3 +1,14 @@
+
+## Summary
+
+The following repository includes my scripts, experiments, and notes that document my progress through the Stanford Ribonanza RNA Folding, which can be found on Kaggle [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding) . This work resulted in 7th place and a gold medal, the full solution write up can he foound [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/discussion/460190)
+
+## Installation
+
+I recommend using the official `nvidia` or `kaggle` docker images with the appropriate CUDA version for the best compatibility, data can be downloaded from offical page [here](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/data), for `bpp` and `ss` I recommend to install [arnie](https://github.com/DasLab/arnie)
+
+## Experimetns  and Results
+
 | exp_name | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | CV    | LB      |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------- |
 | `exp_00` | Initial experiment using `RNA_ModelV2` on `RNA_DatasetBaseline`. Utilizes 1D convolution after `nn.Embedding` layer and transformer. Configuration includes `64` batch size, `12` workers, `192` dimensions, `12` depth, `32` dim_head, and `64` epochs with `5e-4` learning rate and `0.05` weight decay. The experiment is running on `CUDA` device.                                                                                                                       |       |         |
@@ -58,9 +69,3 @@
 | `exp_39`   | In `exp_39`, the model architecture shifts to `RnaModelConvV2`, integrating 1D convolutions with `CombinationTransformerEncoderV1` blocks. The focus is to explore the effectiveness of 1D convolutions in the feature extraction phase. While the preliminary outcomes indicate an improvement, they still lag behind the best-performing models like `exp_32` | `0.1332`   |    |
 | `exp_40`   | This experiment is a variant of `exp_39`, but it replaces the `RnaModelConvV3`, bassicly EffBlock followed by `CombinationTransformerEncoderV1`, it was going good but then overfitted | `0.12724`   |    |
 | `exp_41`   | The model utilizes `ConvolutionConcatBlockV4`, consisting of `EffBlock` and `CombinationTransformerEncoderV29`. The latter takes an average of all `bpps` and `ss` inputs instead of individually feeding them to transformers. There are 6 blocks of `ConvolutionConcatBlockV4` followed by 10 standard transformer blocks. The primary objective is to see if averaging inputs combined with convolutional blocks can lead to a better performance. Trained untill `epoch` `28` then its started to overfit | `0.1278`   |    |
-
-
-
-> to do: substitue extracter layer with put gat 
-> hello
-> before `exp_10` i used to mask bpp and ss based on this post organizers might score adaptesr as well(https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/discussion/442828#2454599)
